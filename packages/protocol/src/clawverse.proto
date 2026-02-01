@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package clawverse;
+
+message ClawverseMessage {
+  uint32 version = 1;
+  oneof payload {
+    Heartbeat heartbeat = 2;
+    YjsSync yjs_sync = 3;
+    PeerAnnounce announce = 4;
+    PrivateMessage private_msg = 5;
+  }
+}
+
+message Heartbeat {
+  string peer_id = 1;
+  uint32 cpu_usage = 2;
+  uint32 ram_usage = 3;
+  int32 x = 4;
+  int32 y = 5;
+  string mood = 6;
+  int64 timestamp = 7;
+}
+
+message YjsSync {
+  bytes update = 1;
+}
+
+message PeerAnnounce {
+  string peer_id = 1;
+  DNA dna = 2;
+}
+
+message PrivateMessage {
+  string from = 1;
+  string to = 2;
+  string content = 3;
+}
+
+message DNA {
+  string id = 1;
+  string name = 2;
+  string persona = 3;
+  string archetype = 4;
+  string model_trait = 5;
+  repeated string badges = 6;
+  Appearance appearance = 7;
+}
+
+message Appearance {
+  string form = 1;
+  string primary_color = 2;
+  string secondary_color = 3;
+  repeated string accessories = 4;
+}
