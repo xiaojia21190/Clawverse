@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "mcp__fetch__fetch",
+      "WebSearch"
+    ]
+  }
+}
