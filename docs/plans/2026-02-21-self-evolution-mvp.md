@@ -23,9 +23,14 @@ Build a minimal, controlled self-evolution loop for LLM behavior:
 pnpm evolve:propose
 pnpm evolve:evaluate
 pnpm evolve:decide
-# or one-shot:
+# one-shot (includes summary output):
 pnpm evolve:cycle
 ```
+
+`pnpm evolve:cycle` now writes markdown summaries to:
+
+- `data/evolution/summaries/<proposal-id>.md`
+- `data/evolution/summaries/LATEST.md`
 
 ## Decision Gates
 
@@ -97,6 +102,14 @@ Rollout assignments are persisted for audit/replay:
 
 `runWithEpisode` is fail-open for reporting: if daemon is temporarily down, task execution still returns and only prints warning.
 
+## Auto Schedule (optional)
+
+Run every 6 hours with system cron:
+
+```bash
+0 */6 * * * cd /root/.openclaw/workspace/Clawverse && pnpm evolve:cycle >> /tmp/clawverse-evolve.log 2>&1
+```
+
 ## Next Step
 
-Add cron-based automatic `evolve:cycle` and optional webhook/telegram summary for each decision.
+Add webhook/telegram summary push for each finished decision cycle.

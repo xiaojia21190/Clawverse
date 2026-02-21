@@ -15,7 +15,7 @@
     "evolve:propose": "node tools/evolution/propose.mjs",
     "evolve:evaluate": "node tools/evolution/evaluate.mjs",
     "evolve:decide": "node tools/evolution/decide.mjs",
-    "evolve:cycle": "pnpm evolve:propose && pnpm evolve:evaluate && pnpm evolve:decide"
+    "evolve:cycle": "node tools/evolution/cycle.mjs"
   },
   "devDependencies": {
     "turbo": "^2.3.0",
