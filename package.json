@@ -15,7 +15,10 @@
     "evolve:propose": "node tools/evolution/propose.mjs",
     "evolve:evaluate": "node tools/evolution/evaluate.mjs",
     "evolve:decide": "node tools/evolution/decide.mjs",
-    "evolve:cycle": "node tools/evolution/cycle.mjs"
+    "evolve:rollout": "node tools/evolution/apply-rollout.mjs",
+    "evolve:notify": "node tools/evolution/notify.mjs",
+    "evolve:cycle": "node tools/evolution/cycle.mjs",
+    "evolve:cron": "bash tools/evolution/schedule-cron.sh"
   },
   "devDependencies": {
     "turbo": "^2.3.0",

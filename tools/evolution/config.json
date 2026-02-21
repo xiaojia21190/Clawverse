@@ -16,5 +16,11 @@
     "stage2": "50% traffic for 12 hours",
     "stage3": "100% traffic"
   },
+  "rolloutPolicy": {
+    "startRatio": 0.1,
+    "stepUp": 0.2,
+    "maxRatio": 1,
+    "stepDownOnFail": 0.1
+  },
   "notes": "Only evolve prompts/planner first. Do not auto-edit security boundaries."
 }

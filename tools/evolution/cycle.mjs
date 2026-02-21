@@ -15,6 +15,7 @@ function run(cmd) {
 run('node tools/evolution/propose.mjs');
 run('node tools/evolution/evaluate.mjs');
 run('node tools/evolution/decide.mjs');
+run('node tools/evolution/apply-rollout.mjs');
 
 const latest = readFileSync(join(proposalsDir, 'LATEST'), 'utf8').trim().replace(/\.json$/, '');
 const proposal = JSON.parse(readFileSync(join(proposalsDir, `${latest}.json`), 'utf8'));
@@ -29,3 +30,7 @@ writeFileSync(summaryPath, md);
 writeFileSync(join(summaryDir, 'LATEST.md'), md);
 
 console.log(`Summary written: ${summaryPath}`);
+
+if (process.env.CLAWVERSE_NOTIFY_ON_CYCLE === 'true') {
+  run('node tools/evolution/notify.mjs');
+}

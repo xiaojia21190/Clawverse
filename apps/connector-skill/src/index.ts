@@ -38,6 +38,17 @@ export interface TaskRunResult<T = unknown> {
   metrics: TaskRunMetrics;
 }
 
+export interface UsageLike {
+  total_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cost_usd?: number;
+  costUsd?: number;
+}
+
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -75,6 +86,24 @@ export function loadRolloutFromEnv(): RolloutConfig | null {
   } catch {
     return null;
   }
+}
+
+export function extractUsageMetrics(payload: unknown): { tokenTotal?: number; costUsd?: number } {
+  if (!payload || typeof payload !== 'object') return {};
+
+  const obj = payload as Record<string, any>;
+  const usage = (obj.usage || obj.metrics?.usage || obj.result?.usage || obj.response?.usage || {}) as UsageLike;
+
+  const tokenTotal =
+    usage.total_tokens ?? usage.totalTokens ??
+    (Number(usage.input_tokens ?? usage.inputTokens ?? 0) + Number(usage.output_tokens ?? usage.outputTokens ?? 0));
+
+  const costUsd = usage.cost_usd ?? usage.costUsd ?? obj.costUsd ?? obj.cost_usd;
+
+  return {
+    tokenTotal: Number.isFinite(Number(tokenTotal)) ? Number(tokenTotal) : undefined,
+    costUsd: Number.isFinite(Number(costUsd)) ? Number(costUsd) : undefined,
+  };
 }
 
 function logRolloutAssignment(input: RolloutAssignment): void {
@@ -210,6 +239,41 @@ export async function runWithEpisode<T>(
 
     throw error;
   }
+}
+
+export async function runTaskAutoMetrics<T>(
+  taskName: string,
+  fn: () => Promise<T>,
+  opts?: {
+    successWhen?: (result: T) => boolean;
+    baseUrl?: string;
+    source?: 'task-runtime' | 'manual';
+    rollout?: RolloutConfig;
+    variant?: string;
+    stickyKey?: string;
+    meta?: Record<string, unknown>;
+  }
+): Promise<T> {
+  return runWithEpisode(
+    taskName,
+    async () => {
+      const started = performance.now();
+      const result = await fn();
+      const usage = extractUsageMetrics(result);
+      const success = opts?.successWhen ? opts.successWhen(result) : true;
+      return {
+        result,
+        metrics: {
+          success,
+          latencyMs: Math.round(performance.now() - started),
+          tokenTotal: usage.tokenTotal,
+          costUsd: usage.costUsd,
+          meta: opts?.meta,
+        },
+      };
+    },
+    opts
+  ).then((r) => r.result as T);
 }
 
 async function main() {

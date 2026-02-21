@@ -104,12 +104,43 @@ Rollout assignments are persisted for audit/replay:
 
 ## Auto Schedule (optional)
 
-Run every 6 hours with system cron:
+Install/update cron automatically:
 
 ```bash
-0 */6 * * * cd /root/.openclaw/workspace/Clawverse && pnpm evolve:cycle >> /tmp/clawverse-evolve.log 2>&1
+pnpm evolve:cron
+# custom expression:
+bash tools/evolution/schedule-cron.sh '0 */4 * * *'
 ```
+
+## Notifications (webhook/telegram)
+
+`pnpm evolve:notify` sends `data/evolution/summaries/LATEST.md` when env is set:
+
+- `CLAWVERSE_NOTIFY_WEBHOOK`
+- or `CLAWVERSE_TELEGRAM_BOT_TOKEN` + `CLAWVERSE_TELEGRAM_CHAT_ID`
+
+Enable notify in cycle:
+
+```bash
+export CLAWVERSE_NOTIFY_ON_CYCLE=true
+pnpm evolve:cycle
+```
+
+## Rollout Auto-Gate & Auto-Ratio
+
+`pnpm evolve:cycle` now runs `apply-rollout.mjs` after decision:
+
+- Maintains `data/evolution/rollout/state.json`
+- Emits env snippet at `data/evolution/rollout/latest.env`
+- Adjusts `candidateRatio` by `rolloutPolicy` in config
+
+## Task-level Real Token/Cost Capture
+
+In connector:
+
+- `runWithEpisode(taskName, fn)` for explicit metrics
+- `runTaskAutoMetrics(taskName, fn)` to auto-extract `usage` fields (`total_tokens`, `input/output_tokens`, `cost_usd`, etc.)
 
 ## Next Step
 
-Add webhook/telegram summary push for each finished decision cycle.
+Wire connector wrapper into real production task executors so every task path reports metrics without manual changes.
