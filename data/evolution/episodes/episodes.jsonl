@@ -1,0 +1,6 @@
+{"id":"e1","variant":"baseline-v1","success":true,"latencyMs":820,"tokenTotal":2200,"costUsd":0.12}
+{"id":"e2","variant":"baseline-v1","success":false,"latencyMs":910,"tokenTotal":2450,"costUsd":0.13}
+{"id":"e3","variant":"baseline-v1","success":true,"latencyMs":870,"tokenTotal":2300,"costUsd":0.12}
+{"id":"e4","variant":"candidate-v2","success":true,"latencyMs":860,"tokenTotal":2350,"costUsd":0.12}
+{"id":"e5","variant":"candidate-v2","success":true,"latencyMs":900,"tokenTotal":2400,"costUsd":0.13}
+{"id":"e6","variant":"candidate-v2","success":true,"latencyMs":890,"tokenTotal":2380,"costUsd":0.13}

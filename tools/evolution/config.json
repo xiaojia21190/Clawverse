@@ -1,0 +1,17 @@
+{
+  "goal": "Increase task success while keeping latency/cost stable",
+  "baseline": "baseline-v1",
+  "candidate": "candidate-v2",
+  "metrics": {
+    "minSuccessLift": 0.03,
+    "maxLatencyDeltaMs": 150,
+    "maxTokenDelta": 300,
+    "maxCostDeltaUsd": 0.02
+  },
+  "rollout": {
+    "stage1": "10% traffic for 2 hours",
+    "stage2": "50% traffic for 12 hours",
+    "stage3": "100% traffic"
+  },
+  "notes": "Only evolve prompts/planner first. Do not auto-edit security boundaries."
+}

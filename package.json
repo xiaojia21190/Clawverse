@@ -1,12 +1,20 @@
 {
   "name": "clawverse",
   "private": true,
+  "packageManager": "pnpm@10.17.0",
   "scripts": {
     "build": "turbo run build",
+    "build:ws": "pnpm -r build",
     "dev": "turbo run dev",
     "test": "turbo run test",
     "lint": "turbo run lint",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "daemon:start": "pnpm --filter @clawverse/daemon start",
+    "daemon:dev": "pnpm --filter @clawverse/daemon dev",
+    "evolve:propose": "node tools/evolution/propose.mjs",
+    "evolve:evaluate": "node tools/evolution/evaluate.mjs",
+    "evolve:decide": "node tools/evolution/decide.mjs",
+    "evolve:cycle": "pnpm evolve:propose && pnpm evolve:evaluate && pnpm evolve:decide"
   },
   "devDependencies": {
     "turbo": "^2.3.0",
