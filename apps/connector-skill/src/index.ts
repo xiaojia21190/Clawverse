@@ -4,7 +4,14 @@ export interface EvolutionEpisodeInput {
   tokenTotal?: number;
   costUsd?: number;
   source?: 'task-runtime' | 'manual';
+  variant?: string;
   meta?: Record<string, unknown>;
+}
+
+export interface RolloutConfig {
+  baseline: string;
+  candidate: string;
+  candidateRatio: number; // 0..1
 }
 
 export interface TaskRunMetrics {
@@ -18,6 +25,28 @@ export interface TaskRunMetrics {
 export interface TaskRunResult<T = unknown> {
   result?: T;
   metrics: TaskRunMetrics;
+}
+
+export function pickVariant(cfg?: RolloutConfig): string {
+  if (!cfg) return process.env.CLAWVERSE_EVOLUTION_VARIANT || 'baseline-v1';
+  return Math.random() < cfg.candidateRatio ? cfg.candidate : cfg.baseline;
+}
+
+export function loadRolloutFromEnv(): RolloutConfig | null {
+  const raw = process.env.CLAWVERSE_ROLLOUT_JSON;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as RolloutConfig;
+    if (!parsed.baseline || !parsed.candidate) return null;
+    const ratio = Number(parsed.candidateRatio);
+    return {
+      baseline: parsed.baseline,
+      candidate: parsed.candidate,
+      candidateRatio: Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function reportEpisode(
@@ -51,9 +80,15 @@ export async function reportEpisode(
 export async function runWithEpisode<T>(
   taskName: string,
   fn: () => Promise<TaskRunResult<T>>,
-  opts?: { baseUrl?: string; source?: 'task-runtime' | 'manual' }
+  opts?: {
+    baseUrl?: string;
+    source?: 'task-runtime' | 'manual';
+    rollout?: RolloutConfig;
+    variant?: string;
+  }
 ): Promise<TaskRunResult<T>> {
   const startedAt = performance.now();
+  const variant = opts?.variant || pickVariant(opts?.rollout || loadRolloutFromEnv() || undefined);
 
   try {
     const run = await fn();
@@ -69,8 +104,10 @@ export async function runWithEpisode<T>(
         tokenTotal: run.metrics.tokenTotal,
         costUsd: run.metrics.costUsd,
         source: opts?.source || 'task-runtime',
+        variant,
         meta: {
           task: taskName,
+          variantAssigned: variant,
           ...run.metrics.meta,
         },
       },
@@ -86,8 +123,10 @@ export async function runWithEpisode<T>(
         success: false,
         latencyMs,
         source: opts?.source || 'task-runtime',
+        variant,
         meta: {
           task: taskName,
+          variantAssigned: variant,
           error: error instanceof Error ? error.message : String(error),
         },
       },

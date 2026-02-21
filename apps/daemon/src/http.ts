@@ -111,6 +111,7 @@ export async function createHttpServer(
       tokenTotal?: number;
       costUsd?: number;
       source?: 'task-runtime' | 'manual';
+      variant?: string;
       meta?: Record<string, unknown>;
     };
   }>('/evolution/episode', async (request, reply) => {
@@ -127,6 +128,7 @@ export async function createHttpServer(
 
     context.episodeLogger.record({
       idPrefix: body.source === 'manual' ? 'manual' : 'task',
+      variant: body.variant,
       source: body.source || 'task-runtime',
       success: body.success,
       latencyMs: body.latencyMs,

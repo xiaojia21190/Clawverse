@@ -58,7 +58,7 @@ Check status:
 
 Push task-level episodes:
 
-- `POST /evolution/episode`
+- `POST /evolution/episode` (supports optional `variant` override)
 - or via connector wrapper: `runWithEpisode(taskName, fn)`
 
 Example:
@@ -76,6 +76,16 @@ curl -X POST http://127.0.0.1:19820/evolution/episode \
   }'
 ```
 
+## Online A/B (connector)
+
+`runWithEpisode` can auto-assign baseline/candidate via env rollout config:
+
+```bash
+export CLAWVERSE_ROLLOUT_JSON='{"baseline":"baseline-v1","candidate":"candidate-v2","candidateRatio":0.1}'
+```
+
+Then every wrapped task reports with assigned variant.
+
 ## Next Step
 
-Wire connector-skill / task orchestrator to automatically post real task outcomes to `/evolution/episode`.
+Add deterministic bucketing by user/task key (instead of pure random) for stable cohort assignment.

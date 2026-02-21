@@ -34,17 +34,17 @@ export class EvolutionEpisodeLogger {
   }
 
   record(
-    input: Omit<EpisodeRecord, 'id' | 'ts' | 'variant'> & { idPrefix?: string }
+    input: Omit<EpisodeRecord, 'id' | 'ts' | 'variant'> & { idPrefix?: string; variant?: string }
   ): void {
     this.counter += 1;
     if (this.counter % this.flushEvery !== 0) return;
 
-    const { idPrefix, ...payload } = input;
+    const { idPrefix, variant, ...payload } = input;
 
     const row: EpisodeRecord = {
       id: `${idPrefix || 'ep'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       ts: new Date().toISOString(),
-      variant: this.variant,
+      variant: variant || this.variant,
       ...payload,
     };
 

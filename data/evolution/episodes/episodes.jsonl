@@ -20,3 +20,4 @@
 {"id":"hb-1771659984695-449bb1","ts":"2026-02-21T07:46:24.695Z","variant":"baseline-v1","source":"daemon-heartbeat","success":true,"latencyMs":0,"meta":{"connectedPeers":0,"knownPeers":1,"cpuUsage":100,"ramUsage":92,"mood":"stressed"}}
 {"id":"manual-1771660275711-2eb736","ts":"2026-02-21T07:51:15.711Z","variant":"baseline-v1","source":"manual","success":true,"latencyMs":666,"tokenTotal":3000,"costUsd":0.09,"meta":{"via":"connector-skill-cli"}}
 {"id":"task-1771660413109-8d1a6f","ts":"2026-02-21T07:53:33.109Z","variant":"baseline-v1","source":"task-runtime","success":true,"latencyMs":120,"tokenTotal":1500,"costUsd":0.05,"meta":{"task":"connector-demo-task","via":"connector-demo"}}
+{"id":"task-1771660817436-d89b7e","ts":"2026-02-21T08:00:17.436Z","variant":"candidate-v2","source":"task-runtime","success":true,"latencyMs":123,"meta":{"task":"variant-override-test"}}
