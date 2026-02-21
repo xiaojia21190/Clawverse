@@ -32,6 +32,12 @@ pnpm evolve:cycle
 - `data/evolution/summaries/<proposal-id>.md`
 - `data/evolution/summaries/LATEST.md`
 
+Inspect current rollout + last decision:
+
+```bash
+pnpm evolve:status
+```
+
 ## Decision Gates
 
 Defined in `tools/evolution/config.json`:
@@ -101,6 +107,11 @@ Rollout assignments are persisted for audit/replay:
 - override via `CLAWVERSE_ROLLOUT_AUDIT_PATH`
 
 `runWithEpisode` is fail-open for reporting: if daemon is temporarily down, task execution still returns and only prints warning.
+
+`reportEpisode` also retries transient failures:
+
+- `CLAWVERSE_REPORT_RETRIES` (default 2)
+- `CLAWVERSE_REPORT_BACKOFF_MS` (default 300)
 
 ## Auto Schedule (optional)
 

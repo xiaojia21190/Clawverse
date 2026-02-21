@@ -49,7 +49,7 @@ export interface UsageLike {
   costUsd?: number;
 }
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 function hashToUnitInterval(input: string): number {
@@ -70,19 +70,32 @@ export function pickVariant(cfg?: RolloutConfig): string {
   return bucket < ratio ? cfg.candidate : cfg.baseline;
 }
 
+function normalizeRollout(parsed: RolloutConfig | null | undefined): RolloutConfig | null {
+  if (!parsed || !parsed.baseline || !parsed.candidate) return null;
+  const ratio = Number(parsed.candidateRatio);
+  return {
+    baseline: parsed.baseline,
+    candidate: parsed.candidate,
+    candidateRatio: Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0,
+    stickyKey: parsed.stickyKey,
+  };
+}
+
 export function loadRolloutFromEnv(): RolloutConfig | null {
   const raw = process.env.CLAWVERSE_ROLLOUT_JSON;
-  if (!raw) return null;
+  if (raw) {
+    try {
+      return normalizeRollout(JSON.parse(raw) as RolloutConfig);
+    } catch {
+      // ignore and fallback to rollout state file
+    }
+  }
+
+  const statePath = process.env.CLAWVERSE_ROLLOUT_STATE_PATH || 'data/evolution/rollout/state.json';
   try {
-    const parsed = JSON.parse(raw) as RolloutConfig;
-    if (!parsed.baseline || !parsed.candidate) return null;
-    const ratio = Number(parsed.candidateRatio);
-    return {
-      baseline: parsed.baseline,
-      candidate: parsed.candidate,
-      candidateRatio: Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0,
-      stickyKey: parsed.stickyKey,
-    };
+    const full = resolve(process.cwd(), statePath);
+    const parsed = JSON.parse(readFileSync(full, 'utf8')) as RolloutConfig;
+    return normalizeRollout(parsed);
   } catch {
     return null;
   }
@@ -128,29 +141,50 @@ async function safeReportEpisode(
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
 export async function reportEpisode(
   input: EvolutionEpisodeInput,
   baseUrl = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820'
 ): Promise<{ ok: boolean; variant?: string; error?: string }> {
-  const res = await fetch(`${baseUrl}/evolution/episode`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ source: 'task-runtime', ...input }),
-  });
+  const retries = Number(process.env.CLAWVERSE_REPORT_RETRIES || 2);
+  const backoffMs = Number(process.env.CLAWVERSE_REPORT_BACKOFF_MS || 300);
 
-  const text = await res.text();
-  let data: any = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { raw: text };
+  let lastError = 'unknown';
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const res = await fetch(`${baseUrl}/evolution/episode`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ source: 'task-runtime', ...input }),
+      });
+
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { raw: text };
+      }
+
+      if (!res.ok) {
+        lastError = data?.error || `http_${res.status}`;
+      } else {
+        return { ok: true, variant: data?.variant };
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    if (attempt < retries) {
+      await sleep(backoffMs * (attempt + 1));
+    }
   }
 
-  if (!res.ok) {
-    return { ok: false, error: data?.error || `http_${res.status}` };
-  }
-
-  return { ok: true, variant: data?.variant };
+  return { ok: false, error: lastError };
 }
 
 /**

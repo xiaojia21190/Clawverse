@@ -17,6 +17,7 @@
     "evolve:decide": "node tools/evolution/decide.mjs",
     "evolve:rollout": "node tools/evolution/apply-rollout.mjs",
     "evolve:notify": "node tools/evolution/notify.mjs",
+    "evolve:status": "node tools/evolution/status.mjs",
     "evolve:cycle": "node tools/evolution/cycle.mjs",
     "evolve:cron": "bash tools/evolution/schedule-cron.sh"
   },
