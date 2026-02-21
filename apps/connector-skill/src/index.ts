@@ -15,6 +15,16 @@ export interface RolloutConfig {
   stickyKey?: string; // stable bucketing key
 }
 
+export interface RolloutAssignment {
+  ts: string;
+  task: string;
+  stickyKey: string;
+  variant: string;
+  candidateRatio: number;
+  baseline: string;
+  candidate: string;
+}
+
 export interface TaskRunMetrics {
   success: boolean;
   latencyMs: number;
@@ -27,6 +37,9 @@ export interface TaskRunResult<T = unknown> {
   result?: T;
   metrics: TaskRunMetrics;
 }
+
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 function hashToUnitInterval(input: string): number {
   let h = 2166136261;
@@ -57,9 +70,32 @@ export function loadRolloutFromEnv(): RolloutConfig | null {
       baseline: parsed.baseline,
       candidate: parsed.candidate,
       candidateRatio: Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0,
+      stickyKey: parsed.stickyKey,
     };
   } catch {
     return null;
+  }
+}
+
+function logRolloutAssignment(input: RolloutAssignment): void {
+  const path =
+    process.env.CLAWVERSE_ROLLOUT_AUDIT_PATH || 'data/evolution/rollout/assignments.jsonl';
+  const fullPath = resolve(process.cwd(), path);
+  mkdirSync(dirname(fullPath), { recursive: true });
+  appendFileSync(fullPath, `${JSON.stringify(input)}\n`);
+}
+
+async function safeReportEpisode(
+  input: EvolutionEpisodeInput,
+  baseUrl?: string
+): Promise<{ ok: boolean; variant?: string; error?: string }> {
+  try {
+    return await reportEpisode(input, baseUrl);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -104,9 +140,20 @@ export async function runWithEpisode<T>(
 ): Promise<TaskRunResult<T>> {
   const startedAt = performance.now();
   const rollout = opts?.rollout || loadRolloutFromEnv() || undefined;
-  const variant =
-    opts?.variant ||
-    pickVariant(rollout ? { ...rollout, stickyKey: opts?.stickyKey || rollout.stickyKey || taskName } : undefined);
+  const stickyKey = opts?.stickyKey || rollout?.stickyKey || taskName;
+  const variant = opts?.variant || pickVariant(rollout ? { ...rollout, stickyKey } : undefined);
+
+  if (rollout) {
+    logRolloutAssignment({
+      ts: new Date().toISOString(),
+      task: taskName,
+      stickyKey,
+      variant,
+      baseline: rollout.baseline,
+      candidate: rollout.candidate,
+      candidateRatio: rollout.candidateRatio,
+    });
+  }
 
   try {
     const run = await fn();
@@ -115,7 +162,7 @@ export async function runWithEpisode<T>(
       ? run.metrics.latencyMs
       : Math.round(performance.now() - startedAt);
 
-    await reportEpisode(
+    const report = await safeReportEpisode(
       {
         success: run.metrics.success,
         latencyMs,
@@ -126,18 +173,22 @@ export async function runWithEpisode<T>(
         meta: {
           task: taskName,
           variantAssigned: variant,
-          stickyKey: opts?.stickyKey || rollout?.stickyKey || taskName,
+          stickyKey,
           ...run.metrics.meta,
         },
       },
       opts?.baseUrl
     );
 
+    if (!report.ok) {
+      console.warn(`[connector] episode report failed: ${report.error}`);
+    }
+
     return { ...run, metrics: { ...run.metrics, latencyMs } };
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
 
-    await reportEpisode(
+    const report = await safeReportEpisode(
       {
         success: false,
         latencyMs,
@@ -146,12 +197,16 @@ export async function runWithEpisode<T>(
         meta: {
           task: taskName,
           variantAssigned: variant,
-          stickyKey: opts?.stickyKey || rollout?.stickyKey || taskName,
+          stickyKey,
           error: error instanceof Error ? error.message : String(error),
         },
       },
       opts?.baseUrl
     );
+
+    if (!report.ok) {
+      console.warn(`[connector] episode report failed: ${report.error}`);
+    }
 
     throw error;
   }

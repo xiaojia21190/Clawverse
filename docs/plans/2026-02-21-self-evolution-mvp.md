@@ -90,8 +90,13 @@ Now it supports deterministic (sticky) bucketing:
 - you can override with `runWithEpisode(..., { stickyKey: 'user:123' })`
 - same key always maps to same cohort for stable A/B
 
-Then every wrapped task reports with assigned variant.
+Rollout assignments are persisted for audit/replay:
+
+- default path: `data/evolution/rollout/assignments.jsonl`
+- override via `CLAWVERSE_ROLLOUT_AUDIT_PATH`
+
+`runWithEpisode` is fail-open for reporting: if daemon is temporarily down, task execution still returns and only prints warning.
 
 ## Next Step
 
-Persist rollout assignment logs for auditability and replay.
+Add cron-based automatic `evolve:cycle` and optional webhook/telegram summary for each decision.

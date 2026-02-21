@@ -9,3 +9,4 @@ data/evolution/proposals/*.json
 data/evolution/proposals/LATEST
 data/evolution/reports/*.json
 data/evolution/decisions/*.json
+data/evolution/rollout/*.jsonl
