@@ -11,6 +11,7 @@
     "clean": "turbo run clean",
     "daemon:start": "pnpm --filter @clawverse/daemon start",
     "daemon:dev": "pnpm --filter @clawverse/daemon dev",
+    "connector:report": "pnpm --filter @clawverse/connector-skill build && node apps/connector-skill/dist/index.js",
     "evolve:propose": "node tools/evolution/propose.mjs",
     "evolve:evaluate": "node tools/evolution/evaluate.mjs",
     "evolve:decide": "node tools/evolution/decide.mjs",

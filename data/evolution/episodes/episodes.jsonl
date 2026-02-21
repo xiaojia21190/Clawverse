@@ -18,3 +18,4 @@
 {"id":"hb-1771659982689-55055d","ts":"2026-02-21T07:46:22.689Z","variant":"baseline-v1","source":"daemon-heartbeat","success":true,"latencyMs":2,"meta":{"connectedPeers":0,"knownPeers":1,"cpuUsage":100,"ramUsage":92,"mood":"stressed"}}
 {"id":"hb-1771659983699-f8af3a","ts":"2026-02-21T07:46:23.699Z","variant":"baseline-v1","source":"daemon-heartbeat","success":true,"latencyMs":0,"meta":{"connectedPeers":0,"knownPeers":1,"cpuUsage":100,"ramUsage":92,"mood":"stressed"}}
 {"id":"hb-1771659984695-449bb1","ts":"2026-02-21T07:46:24.695Z","variant":"baseline-v1","source":"daemon-heartbeat","success":true,"latencyMs":0,"meta":{"connectedPeers":0,"knownPeers":1,"cpuUsage":100,"ramUsage":92,"mood":"stressed"}}
+{"id":"manual-1771660275711-2eb736","ts":"2026-02-21T07:51:15.711Z","variant":"baseline-v1","source":"manual","success":true,"latencyMs":666,"tokenTotal":3000,"costUsd":0.09,"meta":{"via":"connector-skill-cli"}}
