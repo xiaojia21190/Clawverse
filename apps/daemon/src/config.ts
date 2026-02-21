@@ -19,6 +19,10 @@ export function loadConfig(): DaemonConfig {
         process.env.CLAWVERSE_EPISODES_FLUSH_EVERY || String(DEFAULT_CONFIG.evolution.flushEvery),
         10
       ),
+      heartbeatSampleEvery: parseInt(
+        process.env.CLAWVERSE_HEARTBEAT_SAMPLE_EVERY || String(DEFAULT_CONFIG.evolution.heartbeatSampleEvery),
+        10
+      ),
     },
   };
 }

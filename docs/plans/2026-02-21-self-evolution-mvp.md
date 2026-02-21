@@ -38,6 +38,8 @@ Defined in `tools/evolution/config.json`:
 
 Candidate is adopted only if all gates pass.
 
+By default, evaluation uses task-like sources only (`task-runtime`, `manual`) via `tools/evolution/config.json` → `evaluation.includeSources`.
+
 ## Runtime Episode Capture (implemented)
 
 Daemon now appends heartbeat episodes to `episodes.jsonl` so evaluation can run on real runtime traces.
@@ -48,6 +50,7 @@ Environment variables:
 - `CLAWVERSE_EVOLUTION_VARIANT=baseline-v1` (or candidate tag)
 - `CLAWVERSE_EPISODES_PATH=data/evolution/episodes/episodes.jsonl`
 - `CLAWVERSE_EPISODES_FLUSH_EVERY=1`
+- `CLAWVERSE_HEARTBEAT_SAMPLE_EVERY=10` (record 1 in N heartbeats)
 
 Check status:
 

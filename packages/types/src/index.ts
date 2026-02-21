@@ -102,6 +102,7 @@ export interface EvolutionRuntimeConfig {
   variant: string;
   episodesPath: string;
   flushEvery: number;
+  heartbeatSampleEvery: number;
 }
 
 export interface DaemonConfig {
@@ -122,6 +123,7 @@ export const DEFAULT_CONFIG: DaemonConfig = {
     variant: 'baseline-v1',
     episodesPath: 'data/evolution/episodes/episodes.jsonl',
     flushEvery: 1,
+    heartbeatSampleEvery: 10,
   },
 };
 

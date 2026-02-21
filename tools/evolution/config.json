@@ -8,6 +8,9 @@
     "maxTokenDelta": 300,
     "maxCostDeltaUsd": 0.02
   },
+  "evaluation": {
+    "includeSources": ["task-runtime", "manual"]
+  },
   "rollout": {
     "stage1": "10% traffic for 2 hours",
     "stage2": "50% traffic for 12 hours",

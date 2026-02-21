@@ -20,9 +20,11 @@ function parseJsonl(path) {
 const latest = readFileSync(join(proposalsDir, 'LATEST'), 'utf8').trim();
 const proposal = JSON.parse(readFileSync(join(proposalsDir, latest), 'utf8'));
 const episodes = parseJsonl(episodesPath);
+const includeSources = proposal?.evaluation?.includeSources || ['task-runtime', 'manual'];
+const filtered = episodes.filter((e) => includeSources.includes(e.source));
 
-const baseline = episodes.filter((e) => e.variant === proposal.baseline);
-const candidate = episodes.filter((e) => e.variant === proposal.candidate);
+const baseline = filtered.filter((e) => e.variant === proposal.baseline);
+const candidate = filtered.filter((e) => e.variant === proposal.candidate);
 
 const toMetrics = (rows) => ({
   samples: rows.length,
@@ -45,6 +47,8 @@ const deltas = {
 const report = {
   proposalId: proposal.id,
   evaluatedAt: new Date().toISOString(),
+  includeSources,
+  sampleSize: filtered.length,
   baseline: { name: proposal.baseline, ...baselineMetrics },
   candidate: { name: proposal.candidate, ...candidateMetrics },
   deltas,

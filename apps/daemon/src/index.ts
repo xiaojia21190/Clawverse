@@ -35,7 +35,10 @@ const episodeLogger = config.evolution.enabled
 
 if (episodeLogger) {
   logger.info(`Episodes Path: ${episodeLogger.getPath()}`);
+  logger.info(`Heartbeat Sampling: 1/${Math.max(1, config.evolution.heartbeatSampleEvery)}`);
 }
+
+let heartbeatTick = 0;
 
 // Initialize State Store
 const stateStore = new StateStore();
@@ -147,7 +150,8 @@ setInterval(async () => {
     const peerCount = network.getPeerCount();
     const knownPeers = stateStore.getPeerCount();
 
-    if (episodeLogger) {
+    heartbeatTick += 1;
+    if (episodeLogger && heartbeatTick % Math.max(1, config.evolution.heartbeatSampleEvery) === 0) {
       episodeLogger.record({
         idPrefix: 'hb',
         source: 'daemon-heartbeat',
