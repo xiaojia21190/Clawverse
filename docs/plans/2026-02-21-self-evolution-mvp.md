@@ -51,6 +51,13 @@ Candidate is adopted only if all gates pass.
 
 By default, evaluation uses task-like sources only (`task-runtime`, `manual`) via `tools/evolution/config.json` → `evaluation.includeSources`.
 
+Decision now includes sample gates:
+
+- `evaluation.minSamplesBaseline`
+- `evaluation.minSamplesCandidate`
+
+If sample size is insufficient, decision becomes `hold` and rollout ratio is not changed.
+
 ## Runtime Episode Capture (implemented)
 
 Daemon now appends heartbeat episodes to `episodes.jsonl` so evaluation can run on real runtime traces.
@@ -83,6 +90,8 @@ Optional file-based config (preferred for ops):
 
 - `CLAWVERSE_SECURITY_CONFIG_PATH` (default `data/security/network.json`)
 - template: `data/security/network.example.json`
+
+Startup now performs security self-check and aborts on hard misconfiguration (e.g. signed ingress requested without shared secret).
 
 Push task-level episodes:
 
@@ -168,6 +177,7 @@ In connector:
 
 - `runWithEpisode(taskName, fn)` for explicit metrics
 - `runTaskAutoMetrics(taskName, fn)` to auto-extract `usage` fields (`total_tokens`, `input/output_tokens`, `cost_usd`, etc.)
+- `createTaskRunner(defaults).run(taskName, fn)` for standardized integration across all task executors
 
 ## Next Step
 

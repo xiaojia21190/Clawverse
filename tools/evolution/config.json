@@ -9,7 +9,9 @@
     "maxCostDeltaUsd": 0.02
   },
   "evaluation": {
-    "includeSources": ["task-runtime", "manual"]
+    "includeSources": ["task-runtime", "manual"],
+    "minSamplesBaseline": 5,
+    "minSamplesCandidate": 5
   },
   "rollout": {
     "stage1": "10% traffic for 2 hours",

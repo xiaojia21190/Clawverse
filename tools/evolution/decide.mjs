@@ -13,25 +13,40 @@ const report = JSON.parse(readFileSync(join(reportsDir, `${proposal.id}.json`), 
 const t = proposal.metrics;
 const d = report.deltas;
 
+const minBaseline = Number(proposal?.evaluation?.minSamplesBaseline || 0);
+const minCandidate = Number(proposal?.evaluation?.minSamplesCandidate || 0);
+
+const sampleChecks = {
+  baselineSamples: (report.baseline?.samples || 0) >= minBaseline,
+  candidateSamples: (report.candidate?.samples || 0) >= minCandidate,
+};
+
 const checks = {
   successRate: d.successRate >= t.minSuccessLift,
   latency: d.avgLatencyMs <= t.maxLatencyDeltaMs,
   tokens: d.avgTokenTotal <= t.maxTokenDelta,
-  cost: d.avgCostUsd <= t.maxCostDeltaUsd
+  cost: d.avgCostUsd <= t.maxCostDeltaUsd,
 };
 
-const passed = Object.values(checks).every(Boolean);
+const samplesReady = Object.values(sampleChecks).every(Boolean);
+const metricPass = Object.values(checks).every(Boolean);
+
+const decisionType = !samplesReady ? 'hold' : metricPass ? 'adopt_candidate' : 'keep_baseline';
 
 const decision = {
   proposalId: proposal.id,
   decidedAt: new Date().toISOString(),
-  passed,
-  decision: passed ? 'adopt_candidate' : 'keep_baseline',
+  passed: decisionType === 'adopt_candidate',
+  decision: decisionType,
+  sampleChecks,
   checks,
   deltas: report.deltas,
-  notes: passed
-    ? 'Candidate passed thresholds. Roll out with configured ramp.'
-    : 'Candidate failed one or more thresholds. Keep baseline and iterate.'
+  notes:
+    decisionType === 'adopt_candidate'
+      ? 'Candidate passed thresholds. Roll out with configured ramp.'
+      : decisionType === 'hold'
+        ? 'Insufficient sample size. Hold rollout ratio and collect more data.'
+        : 'Candidate failed one or more thresholds. Keep baseline and iterate.'
 };
 
 mkdirSync(decisionsDir, { recursive: true });

@@ -310,6 +310,39 @@ export async function runTaskAutoMetrics<T>(
   ).then((r) => r.result as T);
 }
 
+export function createTaskRunner(defaults?: {
+  baseUrl?: string;
+  source?: 'task-runtime' | 'manual';
+  rollout?: RolloutConfig;
+  stickyKey?: string;
+  meta?: Record<string, unknown>;
+}) {
+  return {
+    run: <T>(
+      taskName: string,
+      fn: () => Promise<T>,
+      opts?: {
+        successWhen?: (result: T) => boolean;
+        variant?: string;
+        stickyKey?: string;
+        meta?: Record<string, unknown>;
+      }
+    ) =>
+      runTaskAutoMetrics(taskName, fn, {
+        baseUrl: defaults?.baseUrl,
+        source: defaults?.source,
+        rollout: defaults?.rollout,
+        stickyKey: opts?.stickyKey || defaults?.stickyKey,
+        successWhen: opts?.successWhen,
+        variant: opts?.variant,
+        meta: {
+          ...(defaults?.meta || {}),
+          ...(opts?.meta || {}),
+        },
+      }),
+  };
+}
+
 async function main() {
   const [, , modeOrSuccess, latencyRaw, tokenRaw, costRaw] = process.argv;
 

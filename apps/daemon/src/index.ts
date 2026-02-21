@@ -9,11 +9,21 @@ import { createHttpServer } from './http.js';
 import { createHeartbeat, createYjsSync } from '@clawverse/protocol';
 import { Mood } from '@clawverse/types';
 import { EvolutionEpisodeLogger } from './evolution.js';
+import { loadSecurityConfig, validateSecurityConfig } from './security.js';
 
 const config = loadConfig();
+const securityConfig = loadSecurityConfig();
+const securityValidation = validateSecurityConfig(securityConfig);
 
 if (config.debug) {
   setLogLevel('debug');
+}
+
+if (!securityValidation.ok) {
+  for (const err of securityValidation.errors) {
+    logger.error(`[SECURITY] ${err}`);
+  }
+  process.exit(1);
 }
 
 logger.info('========================================');
@@ -22,6 +32,10 @@ logger.info('========================================');
 logger.info(`Topic: ${config.topic}`);
 logger.info(`HTTP Port: ${config.port}`);
 logger.info(`Heartbeat Interval: ${config.heartbeatInterval}ms`);
+logger.info(`Security Mode: ${securityValidation.mode}`);
+for (const warn of securityValidation.warnings) {
+  logger.warn(`[SECURITY] ${warn}`);
+}
 logger.info(`Evolution Logging: ${config.evolution.enabled ? 'on' : 'off'} (${config.evolution.variant})`);
 const snapshotPath = process.env.CLAWVERSE_STATE_SNAPSHOT_PATH || 'data/state/latest.json';
 const snapshotEvery = Number(process.env.CLAWVERSE_STATE_SNAPSHOT_EVERY || 30);

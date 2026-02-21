@@ -8,6 +8,13 @@ export interface SecurityConfig {
   maxMsgsPer10s?: number;
 }
 
+export interface SecurityValidation {
+  ok: boolean;
+  mode: 'open' | 'allowlist' | 'signed';
+  warnings: string[];
+  errors: string[];
+}
+
 export function loadSecurityConfig(): SecurityConfig {
   const fromEnv = {
     allowedPeers: (process.env.CLAWVERSE_ALLOWED_PEERS || '')
@@ -43,4 +50,36 @@ export function loadSecurityConfig(): SecurityConfig {
   } catch {
     return fromEnv;
   }
+}
+
+export function validateSecurityConfig(config: SecurityConfig): SecurityValidation {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  if ((config.requireSignedIngress || !!config.sharedSecret) && !config.sharedSecret) {
+    errors.push('Signed ingress requested but sharedSecret is missing.');
+  }
+
+  if (!config.allowedPeers?.length) {
+    warnings.push('Peer allowlist is empty (open peer discovery).');
+  }
+
+  if (!config.sharedSecret) {
+    warnings.push('Message signing is disabled (unsigned transport).');
+  }
+
+  if ((config.maxMsgsPer10s || 0) > 1000) {
+    warnings.push('Ingress rate limit is very high; consider lowering maxMsgsPer10s.');
+  }
+
+  let mode: SecurityValidation['mode'] = 'open';
+  if (config.sharedSecret || config.requireSignedIngress) mode = 'signed';
+  else if (config.allowedPeers?.length) mode = 'allowlist';
+
+  return {
+    ok: errors.length === 0,
+    mode,
+    warnings,
+    errors,
+  };
 }

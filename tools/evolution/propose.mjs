@@ -18,7 +18,9 @@ const proposal = {
   candidate: config.candidate,
   baseline: config.baseline,
   metrics: config.metrics,
+  evaluation: config.evaluation,
   rollout: config.rollout,
+  rolloutPolicy: config.rolloutPolicy,
   notes: config.notes ?? ''
 };
 

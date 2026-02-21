@@ -35,8 +35,11 @@ if (decision.decision === 'adopt_candidate') {
   } else {
     state.candidateRatio = Math.min(policy.maxRatio, state.candidateRatio + policy.stepUp);
   }
-} else {
+} else if (decision.decision === 'keep_baseline') {
   state.candidateRatio = Math.max(0, state.candidateRatio - policy.stepDownOnFail);
+} else if (decision.decision === 'hold') {
+  // keep ratio unchanged when sample size is insufficient
+  state.candidateRatio = state.candidateRatio;
 }
 
 state.updatedAt = new Date().toISOString();
