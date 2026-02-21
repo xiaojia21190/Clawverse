@@ -12,6 +12,7 @@ export interface RolloutConfig {
   baseline: string;
   candidate: string;
   candidateRatio: number; // 0..1
+  stickyKey?: string; // stable bucketing key
 }
 
 export interface TaskRunMetrics {
@@ -27,9 +28,22 @@ export interface TaskRunResult<T = unknown> {
   metrics: TaskRunMetrics;
 }
 
+function hashToUnitInterval(input: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  // uint32 -> [0, 1)
+  return (h >>> 0) / 4294967296;
+}
+
 export function pickVariant(cfg?: RolloutConfig): string {
   if (!cfg) return process.env.CLAWVERSE_EVOLUTION_VARIANT || 'baseline-v1';
-  return Math.random() < cfg.candidateRatio ? cfg.candidate : cfg.baseline;
+
+  const ratio = Math.min(1, Math.max(0, cfg.candidateRatio));
+  const bucket = cfg.stickyKey ? hashToUnitInterval(cfg.stickyKey) : Math.random();
+  return bucket < ratio ? cfg.candidate : cfg.baseline;
 }
 
 export function loadRolloutFromEnv(): RolloutConfig | null {
@@ -85,10 +99,14 @@ export async function runWithEpisode<T>(
     source?: 'task-runtime' | 'manual';
     rollout?: RolloutConfig;
     variant?: string;
+    stickyKey?: string;
   }
 ): Promise<TaskRunResult<T>> {
   const startedAt = performance.now();
-  const variant = opts?.variant || pickVariant(opts?.rollout || loadRolloutFromEnv() || undefined);
+  const rollout = opts?.rollout || loadRolloutFromEnv() || undefined;
+  const variant =
+    opts?.variant ||
+    pickVariant(rollout ? { ...rollout, stickyKey: opts?.stickyKey || rollout.stickyKey || taskName } : undefined);
 
   try {
     const run = await fn();
@@ -108,6 +126,7 @@ export async function runWithEpisode<T>(
         meta: {
           task: taskName,
           variantAssigned: variant,
+          stickyKey: opts?.stickyKey || rollout?.stickyKey || taskName,
           ...run.metrics.meta,
         },
       },
@@ -127,6 +146,7 @@ export async function runWithEpisode<T>(
         meta: {
           task: taskName,
           variantAssigned: variant,
+          stickyKey: opts?.stickyKey || rollout?.stickyKey || taskName,
           error: error instanceof Error ? error.message : String(error),
         },
       },

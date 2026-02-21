@@ -84,8 +84,14 @@ curl -X POST http://127.0.0.1:19820/evolution/episode \
 export CLAWVERSE_ROLLOUT_JSON='{"baseline":"baseline-v1","candidate":"candidate-v2","candidateRatio":0.1}'
 ```
 
+Now it supports deterministic (sticky) bucketing:
+
+- default sticky key is `taskName`
+- you can override with `runWithEpisode(..., { stickyKey: 'user:123' })`
+- same key always maps to same cohort for stable A/B
+
 Then every wrapped task reports with assigned variant.
 
 ## Next Step
 
-Add deterministic bucketing by user/task key (instead of pure random) for stable cohort assignment.
+Persist rollout assignment logs for auditability and replay.
