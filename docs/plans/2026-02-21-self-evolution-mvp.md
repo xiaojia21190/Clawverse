@@ -72,6 +72,11 @@ State snapshot (daemon peer state persistence):
 - `CLAWVERSE_STATE_SNAPSHOT_PATH` (default `data/state/latest.json`)
 - `CLAWVERSE_STATE_SNAPSHOT_EVERY` seconds (default `30`)
 
+Network safety guardrails (daemon):
+
+- `CLAWVERSE_ALLOWED_PEERS` (comma-separated peer IDs; empty means allow all)
+- `CLAWVERSE_MAX_MSGS_PER_10S` (default `200` per peer)
+
 Push task-level episodes:
 
 - `POST /evolution/episode` (supports optional `variant` override)
