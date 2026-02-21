@@ -1,4 +1,6 @@
 import * as Y from 'yjs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { PeerState, Position, Mood, Archetype, ModelTrait, HardwareMetrics, DNA } from '@clawverse/types';
 import { logger } from './logger.js';
 
@@ -129,5 +131,35 @@ export class StateStore {
     let count = 0;
     this.peers.forEach(() => count++);
     return count;
+  }
+
+  saveSnapshot(path: string): void {
+    const update = this.getStateUpdate();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      JSON.stringify(
+        {
+          savedAt: new Date().toISOString(),
+          updateBase64: Buffer.from(update).toString('base64'),
+        },
+        null,
+        2
+      )
+    );
+  }
+
+  loadSnapshot(path: string): boolean {
+    try {
+      const raw = readFileSync(path, 'utf8');
+      const data = JSON.parse(raw) as { updateBase64?: string };
+      if (!data.updateBase64) return false;
+      const update = Buffer.from(data.updateBase64, 'base64');
+      this.applyUpdate(new Uint8Array(update));
+      logger.info(`State snapshot loaded: ${path}`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

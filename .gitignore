@@ -13,3 +13,4 @@ data/evolution/rollout/*.jsonl
 data/evolution/rollout/state.json
 data/evolution/rollout/latest.env
 data/evolution/summaries/*.md
+data/state/latest.json

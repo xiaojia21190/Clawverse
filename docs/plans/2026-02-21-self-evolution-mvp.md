@@ -67,6 +67,11 @@ Check status:
 
 - `GET /evolution`
 
+State snapshot (daemon peer state persistence):
+
+- `CLAWVERSE_STATE_SNAPSHOT_PATH` (default `data/state/latest.json`)
+- `CLAWVERSE_STATE_SNAPSHOT_EVERY` seconds (default `30`)
+
 Push task-level episodes:
 
 - `POST /evolution/episode` (supports optional `variant` override)

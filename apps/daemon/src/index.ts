@@ -23,6 +23,9 @@ logger.info(`Topic: ${config.topic}`);
 logger.info(`HTTP Port: ${config.port}`);
 logger.info(`Heartbeat Interval: ${config.heartbeatInterval}ms`);
 logger.info(`Evolution Logging: ${config.evolution.enabled ? 'on' : 'off'} (${config.evolution.variant})`);
+const snapshotPath = process.env.CLAWVERSE_STATE_SNAPSHOT_PATH || 'data/state/latest.json';
+const snapshotEvery = Number(process.env.CLAWVERSE_STATE_SNAPSHOT_EVERY || 30);
+logger.info(`State Snapshot: ${snapshotPath} (every ${snapshotEvery}s)`);
 logger.info('');
 
 const episodeLogger = config.evolution.enabled
@@ -42,6 +45,7 @@ let heartbeatTick = 0;
 
 // Initialize State Store
 const stateStore = new StateStore();
+stateStore.loadSnapshot(snapshotPath);
 
 // Initialize Bio-Monitor
 const bioMonitor = new BioMonitor(config.heartbeatInterval);
@@ -176,10 +180,25 @@ setInterval(async () => {
 logger.info('');
 logger.info('Daemon running. Press Ctrl+C to stop.');
 
+// Periodic state snapshot
+const snapshotInterval = setInterval(() => {
+  try {
+    stateStore.saveSnapshot(snapshotPath);
+  } catch (error) {
+    logger.warn('State snapshot save failed:', error);
+  }
+}, Math.max(5, snapshotEvery) * 1000);
+
 // Graceful shutdown
 const shutdown = async () => {
   logger.info('');
   logger.info('Shutting down...');
+  clearInterval(snapshotInterval);
+  try {
+    stateStore.saveSnapshot(snapshotPath);
+  } catch (error) {
+    logger.warn('Final state snapshot save failed:', error);
+  }
   await httpServer.close();
   bioMonitor.stop();
   await network.stop();
