@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { encode, decode, IClawverseMessage } from '@clawverse/protocol';
 import { PeerInfo } from '@clawverse/types';
 import { logger } from './logger.js';
+import { loadSecurityConfig } from './security.js';
 
 interface HyperswarmSocket extends EventEmitter {
   remotePublicKey: Buffer;
@@ -39,17 +40,13 @@ export class ClawverseNetwork extends EventEmitter {
     this.topicName = topic;
     this.topic = crypto.createHash('sha256').update(topic).digest();
 
-    const allowlistRaw = process.env.CLAWVERSE_ALLOWED_PEERS || '';
-    this.allowedPeers = new Set(
-      allowlistRaw
-        .split(',')
-        .map((x) => x.trim())
-        .filter(Boolean)
-    );
+    const sec = loadSecurityConfig();
 
-    this.maxMsgsPer10s = Math.max(1, Number(process.env.CLAWVERSE_MAX_MSGS_PER_10S || 200));
-    this.sharedSecret = process.env.CLAWVERSE_SHARED_SECRET || '';
-    this.requireSignedIngress = process.env.CLAWVERSE_REQUIRE_SIGNED_INGRESS === 'true';
+    this.allowedPeers = new Set(sec.allowedPeers || []);
+
+    this.maxMsgsPer10s = Math.max(1, Number(sec.maxMsgsPer10s || 200));
+    this.sharedSecret = sec.sharedSecret || '';
+    this.requireSignedIngress = !!sec.requireSignedIngress;
 
     if (this.allowedPeers.size > 0) {
       logger.network(`Peer allowlist enabled (${this.allowedPeers.size} peers)`);

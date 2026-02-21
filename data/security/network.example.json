@@ -1,0 +1,9 @@
+{
+  "allowedPeers": [
+    "abcd1234ef567890",
+    "1122334455667788"
+  ],
+  "sharedSecret": "replace-with-long-random-secret",
+  "requireSignedIngress": true,
+  "maxMsgsPer10s": 200
+}

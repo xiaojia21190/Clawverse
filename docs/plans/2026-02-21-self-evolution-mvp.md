@@ -79,6 +79,11 @@ Network safety guardrails (daemon):
 - `CLAWVERSE_SHARED_SECRET` (enables HMAC-signed message envelope)
 - `CLAWVERSE_REQUIRE_SIGNED_INGRESS=true` (reject unsigned ingress when secret is set)
 
+Optional file-based config (preferred for ops):
+
+- `CLAWVERSE_SECURITY_CONFIG_PATH` (default `data/security/network.json`)
+- template: `data/security/network.example.json`
+
 Push task-level episodes:
 
 - `POST /evolution/episode` (supports optional `variant` override)
