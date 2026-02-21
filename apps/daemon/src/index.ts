@@ -8,6 +8,7 @@ import { StateStore } from './state.js';
 import { createHttpServer } from './http.js';
 import { createHeartbeat, createYjsSync } from '@clawverse/protocol';
 import { Mood } from '@clawverse/types';
+import { EvolutionEpisodeLogger } from './evolution.js';
 
 const config = loadConfig();
 
@@ -21,7 +22,20 @@ logger.info('========================================');
 logger.info(`Topic: ${config.topic}`);
 logger.info(`HTTP Port: ${config.port}`);
 logger.info(`Heartbeat Interval: ${config.heartbeatInterval}ms`);
+logger.info(`Evolution Logging: ${config.evolution.enabled ? 'on' : 'off'} (${config.evolution.variant})`);
 logger.info('');
+
+const episodeLogger = config.evolution.enabled
+  ? new EvolutionEpisodeLogger({
+      episodesPath: config.evolution.episodesPath,
+      variant: config.evolution.variant,
+      flushEvery: config.evolution.flushEvery,
+    })
+  : null;
+
+if (episodeLogger) {
+  logger.info(`Episodes Path: ${episodeLogger.getPath()}`);
+}
 
 // Initialize State Store
 const stateStore = new StateStore();
@@ -45,6 +59,7 @@ const httpServer = await createHttpServer(config.port, {
   bioMonitor,
   network,
   myId,
+  episodeLogger,
 });
 
 // Handle network events
@@ -118,11 +133,37 @@ setInterval(async () => {
       mood: mood,
     });
 
-    await network.broadcast(heartbeat);
+    const t0 = performance.now();
+    let success = true;
 
+    try {
+      await network.broadcast(heartbeat);
+    } catch (error) {
+      success = false;
+      logger.error('Heartbeat broadcast failed:', error);
+    }
+
+    const latencyMs = Math.round(performance.now() - t0);
     const peerCount = network.getPeerCount();
     const knownPeers = stateStore.getPeerCount();
-    logger.info(`Heartbeat (${peerCount} connected, ${knownPeers} known) | ${mood} | CPU: ${metrics.cpuUsage}%`);
+
+    if (episodeLogger) {
+      episodeLogger.record({
+        success,
+        latencyMs,
+        meta: {
+          connectedPeers: peerCount,
+          knownPeers,
+          cpuUsage: metrics.cpuUsage,
+          ramUsage: metrics.ramUsage,
+          mood,
+        },
+      });
+    }
+
+    logger.info(
+      `Heartbeat (${peerCount} connected, ${knownPeers} known) | ${mood} | CPU: ${metrics.cpuUsage}% | ${latencyMs}ms`
+    );
   }
 }, config.heartbeatInterval);
 

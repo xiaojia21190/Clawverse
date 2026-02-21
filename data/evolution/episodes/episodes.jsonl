@@ -4,3 +4,4 @@
 {"id":"e4","variant":"candidate-v2","success":true,"latencyMs":860,"tokenTotal":2350,"costUsd":0.12}
 {"id":"e5","variant":"candidate-v2","success":true,"latencyMs":900,"tokenTotal":2400,"costUsd":0.13}
 {"id":"e6","variant":"candidate-v2","success":true,"latencyMs":890,"tokenTotal":2380,"costUsd":0.13}
+{"id":"hb-1771659614308-497840","ts":"2026-02-21T07:40:14.308Z","variant":"candidate-v2","source":"daemon-heartbeat","success":true,"latencyMs":188,"meta":{"connectedPeers":0,"knownPeers":1,"cpuUsage":100,"ramUsage":65,"mood":"stressed"}}

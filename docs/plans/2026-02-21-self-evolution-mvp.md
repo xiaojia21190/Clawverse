@@ -38,6 +38,21 @@ Defined in `tools/evolution/config.json`:
 
 Candidate is adopted only if all gates pass.
 
+## Runtime Episode Capture (implemented)
+
+Daemon now appends heartbeat episodes to `episodes.jsonl` so evaluation can run on real runtime traces.
+
+Environment variables:
+
+- `CLAWVERSE_EVOLUTION_ENABLED=true|false`
+- `CLAWVERSE_EVOLUTION_VARIANT=baseline-v1` (or candidate tag)
+- `CLAWVERSE_EPISODES_PATH=data/evolution/episodes/episodes.jsonl`
+- `CLAWVERSE_EPISODES_FLUSH_EVERY=1`
+
+Check status:
+
+- `GET /evolution`
+
 ## Next Step
 
-Wire episode generation from daemon/task runtime so this loop runs on real production traces.
+Feed task-level success/cost metrics (not only heartbeat metrics) into episode records for higher-quality evolution decisions.

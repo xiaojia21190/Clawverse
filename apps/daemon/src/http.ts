@@ -3,12 +3,14 @@ import { StateStore } from './state.js';
 import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
 import { logger } from './logger.js';
+import { EvolutionEpisodeLogger } from './evolution.js';
 
 interface APIContext {
   stateStore: StateStore;
   bioMonitor: BioMonitor;
   network: ClawverseNetwork;
   myId: string;
+  episodeLogger: EvolutionEpisodeLogger | null;
 }
 
 export async function createHttpServer(
@@ -89,6 +91,15 @@ export async function createHttpServer(
       connectedPeers: context.network.getPeerCount(),
       knownPeers: context.stateStore.getPeerCount(),
       peers: context.network.getPeers(),
+    };
+  });
+
+  // Evolution logger status
+  fastify.get('/evolution', async () => {
+    return {
+      enabled: !!context.episodeLogger,
+      variant: context.episodeLogger?.getVariant() ?? null,
+      episodesPath: context.episodeLogger?.getPath() ?? null,
     };
   });
 

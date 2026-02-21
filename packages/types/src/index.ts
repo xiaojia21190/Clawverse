@@ -97,11 +97,19 @@ export type NetworkEvent =
 // Daemon Configuration
 // =====================
 
+export interface EvolutionRuntimeConfig {
+  enabled: boolean;
+  variant: string;
+  episodesPath: string;
+  flushEvery: number;
+}
+
 export interface DaemonConfig {
   port: number;                    // HTTP API port
   topic: string;                   // Hyperswarm topic
   heartbeatInterval: number;       // ms
   debug: boolean;
+  evolution: EvolutionRuntimeConfig;
 }
 
 export const DEFAULT_CONFIG: DaemonConfig = {
@@ -109,6 +117,12 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   topic: 'clawverse-v1',
   heartbeatInterval: 5000,
   debug: false,
+  evolution: {
+    enabled: true,
+    variant: 'baseline-v1',
+    episodesPath: 'data/evolution/episodes/episodes.jsonl',
+    flushEvery: 1,
+  },
 };
 
 // =====================
