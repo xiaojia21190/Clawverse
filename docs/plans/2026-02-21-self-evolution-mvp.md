@@ -56,6 +56,7 @@ Check status:
 Push task-level episodes:
 
 - `POST /evolution/episode`
+- or via connector wrapper: `runWithEpisode(taskName, fn)`
 
 Example:
 

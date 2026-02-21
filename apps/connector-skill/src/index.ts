@@ -7,6 +7,19 @@ export interface EvolutionEpisodeInput {
   meta?: Record<string, unknown>;
 }
 
+export interface TaskRunMetrics {
+  success: boolean;
+  latencyMs: number;
+  tokenTotal?: number;
+  costUsd?: number;
+  meta?: Record<string, unknown>;
+}
+
+export interface TaskRunResult<T = unknown> {
+  result?: T;
+  metrics: TaskRunMetrics;
+}
+
 export async function reportEpisode(
   input: EvolutionEpisodeInput,
   baseUrl = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820'
@@ -32,15 +45,90 @@ export async function reportEpisode(
   return { ok: true, variant: data?.variant };
 }
 
-async function main() {
-  const [, , successRaw, latencyRaw, tokenRaw, costRaw] = process.argv;
+/**
+ * Wrap a task function and auto-report an evolution episode on finish.
+ */
+export async function runWithEpisode<T>(
+  taskName: string,
+  fn: () => Promise<TaskRunResult<T>>,
+  opts?: { baseUrl?: string; source?: 'task-runtime' | 'manual' }
+): Promise<TaskRunResult<T>> {
+  const startedAt = performance.now();
 
-  if (typeof successRaw === 'undefined' || typeof latencyRaw === 'undefined') {
-    console.log('Usage: node dist/index.js <success:true|false> <latencyMs> [tokenTotal] [costUsd]');
+  try {
+    const run = await fn();
+
+    const latencyMs = Number.isFinite(run.metrics.latencyMs)
+      ? run.metrics.latencyMs
+      : Math.round(performance.now() - startedAt);
+
+    await reportEpisode(
+      {
+        success: run.metrics.success,
+        latencyMs,
+        tokenTotal: run.metrics.tokenTotal,
+        costUsd: run.metrics.costUsd,
+        source: opts?.source || 'task-runtime',
+        meta: {
+          task: taskName,
+          ...run.metrics.meta,
+        },
+      },
+      opts?.baseUrl
+    );
+
+    return { ...run, metrics: { ...run.metrics, latencyMs } };
+  } catch (error) {
+    const latencyMs = Math.round(performance.now() - startedAt);
+
+    await reportEpisode(
+      {
+        success: false,
+        latencyMs,
+        source: opts?.source || 'task-runtime',
+        meta: {
+          task: taskName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      },
+      opts?.baseUrl
+    );
+
+    throw error;
+  }
+}
+
+async function main() {
+  const [, , modeOrSuccess, latencyRaw, tokenRaw, costRaw] = process.argv;
+
+  // demo mode: node dist/index.js demo
+  if (modeOrSuccess === 'demo') {
+    const out = await runWithEpisode('connector-demo-task', async () => {
+      await new Promise((r) => setTimeout(r, 120));
+      return {
+        result: { ok: true },
+        metrics: {
+          success: true,
+          latencyMs: 120,
+          tokenTotal: 1500,
+          costUsd: 0.05,
+          meta: { via: 'connector-demo' },
+        },
+      };
+    });
+
+    console.log(`demo done: ${JSON.stringify(out.metrics)}`);
+    return;
+  }
+
+  if (typeof modeOrSuccess === 'undefined' || typeof latencyRaw === 'undefined') {
+    console.log('Usage:');
+    console.log('  node dist/index.js <success:true|false> <latencyMs> [tokenTotal] [costUsd]');
+    console.log('  node dist/index.js demo');
     process.exit(1);
   }
 
-  const success = successRaw === 'true';
+  const success = modeOrSuccess === 'true';
   const latencyMs = Number(latencyRaw);
   const tokenTotal = typeof tokenRaw !== 'undefined' ? Number(tokenRaw) : undefined;
   const costUsd = typeof costRaw !== 'undefined' ? Number(costRaw) : undefined;
