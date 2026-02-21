@@ -9,7 +9,7 @@ export interface EpisodeRecord {
   latencyMs: number;
   tokenTotal?: number;
   costUsd?: number;
-  source: 'daemon-heartbeat';
+  source: 'daemon-heartbeat' | 'task-runtime' | 'manual';
   meta?: {
     connectedPeers: number;
     knownPeers: number;
@@ -33,16 +33,19 @@ export class EvolutionEpisodeLogger {
     mkdirSync(dirname(this.episodesPath), { recursive: true });
   }
 
-  record(input: Omit<EpisodeRecord, 'id' | 'ts' | 'variant' | 'source'>): void {
+  record(
+    input: Omit<EpisodeRecord, 'id' | 'ts' | 'variant'> & { idPrefix?: string }
+  ): void {
     this.counter += 1;
     if (this.counter % this.flushEvery !== 0) return;
 
+    const { idPrefix, ...payload } = input;
+
     const row: EpisodeRecord = {
-      id: `hb-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      id: `${idPrefix || 'ep'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       ts: new Date().toISOString(),
       variant: this.variant,
-      source: 'daemon-heartbeat',
-      ...input,
+      ...payload,
     };
 
     appendFileSync(this.episodesPath, `${JSON.stringify(row)}\n`);

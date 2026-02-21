@@ -103,6 +103,41 @@ export async function createHttpServer(
     };
   });
 
+  // Record task/manual episode for evolution evaluation
+  fastify.post<{
+    Body: {
+      success: boolean;
+      latencyMs: number;
+      tokenTotal?: number;
+      costUsd?: number;
+      source?: 'task-runtime' | 'manual';
+      meta?: Record<string, unknown>;
+    };
+  }>('/evolution/episode', async (request, reply) => {
+    if (!context.episodeLogger) {
+      reply.code(400);
+      return { error: 'Evolution logger is disabled' };
+    }
+
+    const body = request.body || ({} as any);
+    if (typeof body.success !== 'boolean' || typeof body.latencyMs !== 'number') {
+      reply.code(400);
+      return { error: 'success:boolean and latencyMs:number are required' };
+    }
+
+    context.episodeLogger.record({
+      idPrefix: body.source === 'manual' ? 'manual' : 'task',
+      source: body.source || 'task-runtime',
+      success: body.success,
+      latencyMs: body.latencyMs,
+      tokenTotal: body.tokenTotal,
+      costUsd: body.costUsd,
+      meta: body.meta as any,
+    });
+
+    return { ok: true, variant: context.episodeLogger.getVariant() };
+  });
+
   // Start server
   try {
     await fastify.listen({ port, host: '127.0.0.1' });

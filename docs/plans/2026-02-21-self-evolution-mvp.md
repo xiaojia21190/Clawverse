@@ -53,6 +53,25 @@ Check status:
 
 - `GET /evolution`
 
+Push task-level episodes:
+
+- `POST /evolution/episode`
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:19820/evolution/episode \
+  -H 'content-type: application/json' \
+  -d '{
+    "success": true,
+    "latencyMs": 920,
+    "tokenTotal": 4100,
+    "costUsd": 0.19,
+    "source": "task-runtime",
+    "meta": {"task":"iran-brief","provider":"openai-codex"}
+  }'
+```
+
 ## Next Step
 
-Feed task-level success/cost metrics (not only heartbeat metrics) into episode records for higher-quality evolution decisions.
+Wire connector-skill / task orchestrator to automatically post real task outcomes to `/evolution/episode`.

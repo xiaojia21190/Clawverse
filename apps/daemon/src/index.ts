@@ -149,6 +149,8 @@ setInterval(async () => {
 
     if (episodeLogger) {
       episodeLogger.record({
+        idPrefix: 'hb',
+        source: 'daemon-heartbeat',
         success,
         latencyMs,
         meta: {
