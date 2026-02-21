@@ -76,6 +76,8 @@ Network safety guardrails (daemon):
 
 - `CLAWVERSE_ALLOWED_PEERS` (comma-separated peer IDs; empty means allow all)
 - `CLAWVERSE_MAX_MSGS_PER_10S` (default `200` per peer)
+- `CLAWVERSE_SHARED_SECRET` (enables HMAC-signed message envelope)
+- `CLAWVERSE_REQUIRE_SIGNED_INGRESS=true` (reject unsigned ingress when secret is set)
 
 Push task-level episodes:
 

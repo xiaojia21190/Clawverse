@@ -31,6 +31,8 @@ export class ClawverseNetwork extends EventEmitter {
   private readonly allowedPeers: Set<string>;
   private readonly maxMsgsPer10s: number;
   private readonly ingressStats: Map<string, { windowStart: number; count: number }> = new Map();
+  private readonly sharedSecret: string;
+  private readonly requireSignedIngress: boolean;
 
   constructor(topic: string) {
     super();
@@ -46,11 +48,19 @@ export class ClawverseNetwork extends EventEmitter {
     );
 
     this.maxMsgsPer10s = Math.max(1, Number(process.env.CLAWVERSE_MAX_MSGS_PER_10S || 200));
+    this.sharedSecret = process.env.CLAWVERSE_SHARED_SECRET || '';
+    this.requireSignedIngress = process.env.CLAWVERSE_REQUIRE_SIGNED_INGRESS === 'true';
 
     if (this.allowedPeers.size > 0) {
       logger.network(`Peer allowlist enabled (${this.allowedPeers.size} peers)`);
     }
     logger.network(`Ingress rate limit: ${this.maxMsgsPer10s} msgs/10s per peer`);
+    if (this.sharedSecret) {
+      logger.network('Message signing enabled (shared secret)');
+    }
+    if (this.requireSignedIngress) {
+      logger.network('Unsigned ingress messages will be rejected');
+    }
   }
 
   private isAllowedPeer(peerId: string): boolean {
@@ -72,6 +82,53 @@ export class ClawverseNetwork extends EventEmitter {
       return false;
     }
     return true;
+  }
+
+  private signBody(body: Uint8Array): string {
+    return crypto
+      .createHmac('sha256', this.sharedSecret)
+      .update(Buffer.from(body))
+      .digest('hex');
+  }
+
+  private encodeWire(body: Uint8Array): Buffer {
+    if (!this.sharedSecret) return Buffer.from(body);
+    const envelope = {
+      v: 1,
+      alg: 'hmac-sha256',
+      sig: this.signBody(body),
+      body: Buffer.from(body).toString('base64'),
+    };
+    return Buffer.from(`CV1:${JSON.stringify(envelope)}`, 'utf8');
+  }
+
+  private decodeWire(peerId: string, data: Buffer): Uint8Array | null {
+    const asText = data.toString('utf8');
+
+    if (!asText.startsWith('CV1:')) {
+      if (this.requireSignedIngress && this.sharedSecret) {
+        logger.warn(`Rejected unsigned message from ${peerId}`);
+        return null;
+      }
+      return new Uint8Array(data);
+    }
+
+    try {
+      const parsed = JSON.parse(asText.slice(4)) as { sig: string; body: string };
+      const body = Buffer.from(parsed.body, 'base64');
+      if (!this.sharedSecret) {
+        return new Uint8Array(body);
+      }
+      const expected = this.signBody(new Uint8Array(body));
+      if (parsed.sig !== expected) {
+        logger.warn(`Rejected bad signature from ${peerId}`);
+        return null;
+      }
+      return new Uint8Array(body);
+    } catch {
+      logger.warn(`Rejected malformed signed envelope from ${peerId}`);
+      return null;
+    }
   }
 
   async start(): Promise<string> {
@@ -112,7 +169,9 @@ export class ClawverseNetwork extends EventEmitter {
         }
 
         try {
-          const message = await decode(new Uint8Array(data));
+          const body = this.decodeWire(peerId, data);
+          if (!body) return;
+          const message = await decode(body);
           info.lastSeen = new Date();
           this.emit('message', peerId, message);
         } catch (err) {
@@ -156,7 +215,7 @@ export class ClawverseNetwork extends EventEmitter {
 
   async broadcast(message: IClawverseMessage): Promise<void> {
     const data = await encode(message);
-    const buffer = Buffer.from(data);
+    const buffer = this.encodeWire(data);
 
     for (const [peerId, { socket }] of this.peers) {
       try {
@@ -176,7 +235,7 @@ export class ClawverseNetwork extends EventEmitter {
 
     try {
       const data = await encode(message);
-      peer.socket.write(Buffer.from(data));
+      peer.socket.write(this.encodeWire(data));
       return true;
     } catch (err) {
       logger.error(`Failed to send to ${peerId}:`, err);
