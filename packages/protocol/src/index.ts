@@ -62,10 +62,10 @@ export function createPrivateMessage(from: string, to: string, content: string):
   };
 }
 
-export function createTaskRequest(data: ITaskRequest): IClawverseMessage {
-  return { version: PROTOCOL_VERSION, taskRequest: data };
+export function createTaskRequest(data: Omit<ITaskRequest, 'ts'>): IClawverseMessage {
+  return { version: PROTOCOL_VERSION, taskRequest: { ...data, ts: Date.now() } };
 }
 
-export function createTaskResult(data: ITaskResult): IClawverseMessage {
-  return { version: PROTOCOL_VERSION, taskResult: data };
+export function createTaskResult(data: Omit<ITaskResult, 'ts'>): IClawverseMessage {
+  return { version: PROTOCOL_VERSION, taskResult: { ...data, ts: Date.now() } };
 }

@@ -70,14 +70,14 @@ export interface ITaskRequest {
   fromName: string;
   context: string;
   question: string;
-  ts: number;
+  ts: number | Long;
 }
 
 export interface ITaskResult {
   taskId: string;
   success: boolean;
   result: string;
-  ts: number;
+  ts: number | Long;
 }
 
 export interface IClawverseMessage {
