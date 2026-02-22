@@ -128,6 +128,51 @@ export const DEFAULT_CONFIG: DaemonConfig = {
 };
 
 // =====================
+// Volatile State (in-memory only, not Yjs-synced)
+// =====================
+
+export interface VolatileState {
+  mood: Mood;
+  cpuUsage: number;
+  ramUsage: number;
+  lastHeartbeat: number; // timestamp ms
+}
+
+// =====================
+// Social System
+// =====================
+
+export type SocialTrigger = 'new-peer' | 'proximity' | 'random';
+
+export interface SocialEvent {
+  id: string;
+  ts: string;
+  trigger: SocialTrigger;
+  from: string;
+  to: string;
+  fromName: string;
+  toName: string;
+  location: string;
+  dialogue: string; // LLM-generated or empty string
+  sentimentBefore: number;
+  sentimentAfter: number;
+}
+
+export interface SocialRelationship {
+  peerId: string;
+  meetCount: number;
+  sentiment: number; // -1 to 1
+  lastMet: string;   // ISO string
+  tags: string[];
+}
+
+export interface LlmConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+// =====================
 // Economy System
 // =====================
 

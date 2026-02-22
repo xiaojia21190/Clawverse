@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFile, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 export interface EpisodeRecord {
@@ -24,6 +24,8 @@ export class EvolutionEpisodeLogger {
   private readonly variant: string;
   private readonly flushEvery: number;
   private counter = 0;
+  private queue: string[] = [];
+  private flushTimer: NodeJS.Timeout;
 
   constructor(opts: { episodesPath: string; variant: string; flushEvery: number }) {
     this.episodesPath = resolve(process.cwd(), opts.episodesPath);
@@ -31,6 +33,10 @@ export class EvolutionEpisodeLogger {
     this.flushEvery = Math.max(1, opts.flushEvery);
 
     mkdirSync(dirname(this.episodesPath), { recursive: true });
+
+    // Flush queue every 3 seconds asynchronously
+    this.flushTimer = setInterval(() => this._flush(), 3000);
+    this.flushTimer.unref();
   }
 
   record(
@@ -48,7 +54,29 @@ export class EvolutionEpisodeLogger {
       ...payload,
     };
 
-    appendFileSync(this.episodesPath, `${JSON.stringify(row)}\n`);
+    this.queue.push(JSON.stringify(row));
+  }
+
+  private _flush(): void {
+    if (this.queue.length === 0) return;
+    const lines = this.queue.splice(0);
+    appendFile(this.episodesPath, lines.join('\n') + '\n', (err) => {
+      if (err) {
+        // re-queue on failure
+        this.queue.unshift(...lines);
+      }
+    });
+  }
+
+  destroy(): void {
+    clearInterval(this.flushTimer);
+    // Best-effort sync flush on exit
+    if (this.queue.length > 0) {
+      const { appendFileSync } = require('node:fs');
+      try {
+        appendFileSync(this.episodesPath, this.queue.join('\n') + '\n');
+      } catch { /* ignore */ }
+    }
   }
 
   getVariant(): string {

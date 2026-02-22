@@ -3,7 +3,22 @@
     "allow": [
       "Bash(dir:*)",
       "mcp__fetch__fetch",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git:*)",
+      "Bash(export:*)",
+      "Bash(cd /d/code/Clawverse && pnpm --filter @clawverse/types build 2>&1)",
+      "Bash(cd /d/code/Clawverse && pnpm --filter @clawverse/protocol build 2>&1)",
+      "Bash(cd /d/code/Clawverse && pnpm --filter @clawverse/daemon build 2>&1)",
+      "Bash(cd /d/code/Clawverse && pnpm build 2>&1)",
+      "Bash(cd /d/code/Clawverse && pnpm --filter @clawverse/connector-skill build 2>&1)",
+      "Bash(test:*)",
+      "mcp__plugin_claude-mem_mcp-search__search",
+      "Bash(cd /d/code/Clawverse/packages/protocol && pnpm build 2>&1)",
+      "Bash(cd /d/code/Clawverse/apps/daemon && pnpm build 2>&1)",
+      "Bash(which git:*)",
+      "Bash(cd:*)",
+      "Bash(cd /d/code/Clawverse/apps/connector-skill && pnpm build 2>&1)",
+      "Bash(echo PATH=$PATH:*)"
     ]
   }
 }

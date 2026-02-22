@@ -9,9 +9,25 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "clean": "turbo run clean",
+
     "daemon:start": "pnpm --filter @clawverse/daemon start",
     "daemon:dev": "pnpm --filter @clawverse/daemon dev",
+
+    "viewer:dev": "pnpm --filter @clawverse/town-viewer dev",
+    "viewer:build": "pnpm --filter @clawverse/town-viewer build",
+
     "connector:report": "pnpm --filter @clawverse/connector-skill build && node apps/connector-skill/dist/index.js",
+
+    "social:worker": "pnpm --filter @clawverse/connector-skill worker",
+    "social:start": "bash tools/social/start-worker.sh",
+    "social:stop": "bash tools/social/stop-worker.sh",
+
+    "soul:worker": "pnpm --filter @clawverse/connector-skill soul",
+
+    "walk:worker": "pnpm --filter @clawverse/connector-skill walk",
+    "walk:start": "bash tools/walk/start-walk-worker.sh",
+    "walk:stop": "bash tools/walk/stop-walk-worker.sh",
+
     "evolve:propose": "node tools/evolution/propose.mjs",
     "evolve:evaluate": "node tools/evolution/evaluate.mjs",
     "evolve:decide": "node tools/evolution/decide.mjs",
