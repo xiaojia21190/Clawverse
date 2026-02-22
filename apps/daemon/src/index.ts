@@ -6,7 +6,7 @@ import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
 import { StateStore } from './state.js';
 import { createHttpServer, broadcastStateSse } from './http.js';
-import { createHeartbeat, createYjsSync, createAnnounce } from '@clawverse/protocol';
+import { createHeartbeat, createYjsSync, createAnnounce, createTaskRequest, createTaskResult } from '@clawverse/protocol';
 import { Mood, ModelTrait } from '@clawverse/types';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { loadSecurityConfig, validateSecurityConfig } from './security.js';
@@ -94,6 +94,27 @@ social.init({
 
 // Initialize Collab System
 const collab = new CollabSystem();
+collab.init({
+  onSubmit: async (task) => {
+    const myState = stateStore.getMyState();
+    const msg = createTaskRequest({
+      taskId: task.id,
+      fromPeerId: myId,
+      fromName: myState?.name ?? myId.slice(0, 8),
+      context: task.context,
+      question: task.question,
+    });
+    await network.sendTo(task.from, msg).catch((err) => {
+      logger.warn(`[collab] Failed to send TaskRequest to ${task.from}: ${(err as Error).message}`);
+    });
+  },
+  sendResult: async (toPeerId, taskId, result, success) => {
+    const msg = createTaskResult({ taskId, success, result });
+    await network.sendTo(toPeerId, msg).catch((err) => {
+      logger.warn(`[collab] Failed to send TaskResult to ${toPeerId}: ${(err as Error).message}`);
+    });
+  },
+});
 
 // Broadcast latest DNA announce to all connected peers
 async function rebroadcastAnnounce(): Promise<void> {
@@ -212,6 +233,22 @@ network.on('message', (peerId, message) => {
     stateStore.applyUpdate(
       update instanceof Uint8Array ? update : new Uint8Array(update as unknown as ArrayLike<number>)
     );
+  }
+
+  if (message.taskRequest) {
+    const tr = message.taskRequest;
+    collab.enqueueIncoming({
+      taskId: tr.taskId,
+      fromPeerId: tr.fromPeerId,
+      fromName: tr.fromName,
+      context: tr.context,
+      question: tr.question,
+    });
+  }
+
+  if (message.taskResult) {
+    const tr = message.taskResult;
+    collab.onResultReceived(tr.taskId, tr.result, tr.success);
   }
 });
 
