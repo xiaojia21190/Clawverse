@@ -64,19 +64,39 @@ export interface IPrivateMessage {
   content: string;
 }
 
+export interface ITaskRequest {
+  taskId: string;
+  fromPeerId: string;
+  fromName: string;
+  context: string;
+  question: string;
+  ts: number;
+}
+
+export interface ITaskResult {
+  taskId: string;
+  success: boolean;
+  result: string;
+  ts: number;
+}
+
 export interface IClawverseMessage {
   version: number;
   heartbeat?: IHeartbeat;
   yjsSync?: IYjsSync;
   announce?: IPeerAnnounce;
   privateMsg?: IPrivateMessage;
+  taskRequest?: ITaskRequest;
+  taskResult?: ITaskResult;
 }
 
 export type MessagePayload =
   | { type: 'heartbeat'; data: IHeartbeat }
   | { type: 'yjsSync'; data: IYjsSync }
   | { type: 'announce'; data: IPeerAnnounce }
-  | { type: 'privateMsg'; data: IPrivateMessage };
+  | { type: 'privateMsg'; data: IPrivateMessage }
+  | { type: 'taskRequest'; data: ITaskRequest }
+  | { type: 'taskResult'; data: ITaskResult };
 
 type Long = number;
 `;

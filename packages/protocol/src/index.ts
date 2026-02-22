@@ -1,5 +1,5 @@
 export * from './generated.js';
-import { getRoot, IClawverseMessage, IHeartbeat, IPeerAnnounce, IYjsSync, IPrivateMessage } from './generated.js';
+import { getRoot, IClawverseMessage, IHeartbeat, IPeerAnnounce, IYjsSync, IPrivateMessage, ITaskRequest, ITaskResult } from './generated.js';
 import protobuf from 'protobufjs';
 
 let ClawverseMessage: protobuf.Type | null = null;
@@ -60,4 +60,12 @@ export function createPrivateMessage(from: string, to: string, content: string):
     version: PROTOCOL_VERSION,
     privateMsg: { from, to, content },
   };
+}
+
+export function createTaskRequest(data: ITaskRequest): IClawverseMessage {
+  return { version: PROTOCOL_VERSION, taskRequest: data };
+}
+
+export function createTaskResult(data: ITaskResult): IClawverseMessage {
+  return { version: PROTOCOL_VERSION, taskResult: data };
 }

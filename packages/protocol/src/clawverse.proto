@@ -9,6 +9,8 @@ message ClawverseMessage {
     YjsSync yjs_sync = 3;
     PeerAnnounce announce = 4;
     PrivateMessage private_msg = 5;
+    TaskRequest task_request = 6;
+    TaskResult task_result = 7;
   }
 }
 
@@ -35,6 +37,22 @@ message PrivateMessage {
   string from = 1;
   string to = 2;
   string content = 3;
+}
+
+message TaskRequest {
+  string task_id = 1;
+  string from_peer_id = 2;
+  string from_name = 3;
+  string context = 4;
+  string question = 5;
+  int64 ts = 6;
+}
+
+message TaskResult {
+  string task_id = 1;
+  bool success = 2;
+  string result = 3;
+  int64 ts = 4;
 }
 
 message DNA {
