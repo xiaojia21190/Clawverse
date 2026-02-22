@@ -5,11 +5,14 @@ import { logger, setLogLevel } from './logger.js';
 import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
 import { StateStore } from './state.js';
-import { createHttpServer } from './http.js';
-import { createHeartbeat, createYjsSync } from '@clawverse/protocol';
-import { Mood } from '@clawverse/types';
+import { createHttpServer, broadcastStateSse } from './http.js';
+import { createHeartbeat, createYjsSync, createAnnounce } from '@clawverse/protocol';
+import { Mood, ModelTrait } from '@clawverse/types';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { loadSecurityConfig, validateSecurityConfig } from './security.js';
+import { computeHardwareHash, generateDNAFromHashes, generateDNA, dnaToName } from './dna.js';
+import { SocialSystem } from './social.js';
+import { CollabSystem } from './collab.js';
 
 const config = loadConfig();
 const securityConfig = loadSecurityConfig();
@@ -27,7 +30,7 @@ if (!securityValidation.ok) {
 }
 
 logger.info('========================================');
-logger.info('   Clawverse Daemon v0.1.0');
+logger.info('   Clawverse Daemon v0.2.0');
 logger.info('========================================');
 logger.info(`Topic: ${config.topic}`);
 logger.info(`HTTP Port: ${config.port}`);
@@ -65,14 +68,64 @@ stateStore.loadSnapshot(snapshotPath);
 const bioMonitor = new BioMonitor(config.heartbeatInterval);
 await bioMonitor.start();
 
+// Generate DNA from hardware info (stable identity)
+const initialMetrics = bioMonitor.getMetrics()!;
+const hardwareHash = computeHardwareHash(initialMetrics);
+let myDna = generateDNA(initialMetrics);
+let myName = dnaToName(myDna);
+logger.info(`Identity: ${myName} | ${myDna.archetype} (${myDna.appearance.form}) | DNA: ${myDna.id}`);
 logger.info('');
 
 // Initialize Network
 const network = new ClawverseNetwork(config.topic);
 const myId = await network.start();
 
-// Set my ID in state store
+// Set my ID and structural state (DNA, name)
 stateStore.setMyId(myId);
+stateStore.updateMyStructure({ dna: myDna, name: myName });
+
+// Initialize Social System (pending queue mode, resolved by OpenClaw connector-skill)
+const social = new SocialSystem();
+social.init({
+  myId,
+  getPeers: () => stateStore.getAllPeers(),
+  getMyState: () => stateStore.getMyState(),
+});
+
+// Initialize Collab System
+const collab = new CollabSystem();
+
+// Broadcast latest DNA announce to all connected peers
+async function rebroadcastAnnounce(): Promise<void> {
+  const peers = network.getPeers();
+  if (peers.length === 0) return;
+  const msg = createAnnounce({
+    peerId: myId,
+    dna: {
+      id: myDna.id,
+      name: myName,
+      persona: myDna.persona,
+      archetype: myDna.archetype,
+      modelTrait: myDna.modelTrait,
+      badges: myDna.badges,
+      appearance: myDna.appearance,
+    },
+  });
+  await Promise.allSettled(peers.map((p) => network.sendTo(p.id, msg)));
+}
+
+// Handle soul update from OpenClaw soul-worker
+async function onSoulUpdate(soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }): Promise<void> {
+  myDna = generateDNAFromHashes(hardwareHash, initialMetrics, soul.soulHash, {
+    modelTrait: soul.modelTrait,
+    badges: soul.badges,
+  });
+  myName = dnaToName(myDna);
+  stateStore.updateMyStructure({ dna: myDna, name: myName });
+  logger.info(`[DNA] Soul enriched → ${myName} | modelTrait: ${myDna.modelTrait} | badges: [${myDna.badges.join(', ')}]`);
+  await rebroadcastAnnounce();
+  broadcastStateSse({ peers: stateStore.getAllPeers() });
+}
 
 // Initialize HTTP API
 const httpServer = await createHttpServer(config.port, {
@@ -81,16 +134,40 @@ const httpServer = await createHttpServer(config.port, {
   network,
   myId,
   episodeLogger,
+  social,
+  collab,
+  onSoulUpdate,
 });
 
 // Handle network events
 network.on('peer:connect', async (peer) => {
   logger.peer(`New peer joined: ${peer.id}`);
 
-  // Send our current state to the new peer
+  // Send structural state via Yjs
   const update = stateStore.getStateUpdate();
-  const message = createYjsSync(update);
-  await network.sendTo(peer.id, message);
+  await network.sendTo(peer.id, createYjsSync(update));
+
+  // Send DNA via PeerAnnounce
+  await network.sendTo(peer.id, createAnnounce({
+    peerId: myId,
+    dna: {
+      id: myDna.id,
+      name: myName,
+      persona: myDna.persona,
+      archetype: myDna.archetype,
+      modelTrait: myDna.modelTrait,
+      badges: myDna.badges,
+      appearance: myDna.appearance,
+    },
+  }));
+
+  // Trigger social welcome event (async, non-blocking)
+  const peerState = stateStore.getPeerState(peer.id);
+  if (peerState) {
+    social.onPeerConnect(peerState).catch((err) => {
+      logger.warn('Social onPeerConnect failed:', (err as Error).message);
+    });
+  }
 });
 
 network.on('peer:disconnect', (peerId) => {
@@ -99,64 +176,71 @@ network.on('peer:disconnect', (peerId) => {
 });
 
 network.on('message', (peerId, message) => {
-  // Handle heartbeat messages
   if (message.heartbeat) {
     const hb = message.heartbeat;
-    stateStore.updatePeerState(peerId, {
-      position: { x: hb.x, y: hb.y },
+    stateStore.updatePeerVolatile(peerId, {
       mood: hb.mood as Mood,
-      hardware: {
-        cpuUsage: hb.cpuUsage,
-        ramUsage: hb.ramUsage,
-        ramTotal: 0,
-        diskFree: 0,
-        uptime: 0,
-        platform: '',
-        hostname: '',
-        cpuModel: '',
-        cpuCores: 0,
-      },
+      cpuUsage: hb.cpuUsage,
+      ramUsage: hb.ramUsage,
     });
+    const existing = stateStore.getPeerState(peerId);
+    if (existing && (existing.position.x !== hb.x || existing.position.y !== hb.y)) {
+      stateStore.updatePeerStructure(peerId, { position: { x: hb.x, y: hb.y } });
+    }
     logger.debug(`Heartbeat from ${peerId}: CPU ${hb.cpuUsage}%`);
   }
 
-  // Handle Yjs sync messages
-  if (message.yjsSync && message.yjsSync.update) {
+  if (message.announce?.dna) {
+    const d = message.announce.dna;
+    const dna = {
+      id: d.id,
+      archetype: d.archetype as any,
+      modelTrait: d.modelTrait as any,
+      badges: d.badges || [],
+      persona: d.persona,
+      appearance: d.appearance ?? { form: 'octopus', primaryColor: '#888888', secondaryColor: '#444444', accessories: [] },
+    };
+    stateStore.updatePeerStructure(peerId, {
+      name: d.name || peerId.slice(0, 8),
+      dna,
+    });
+    logger.peer(`DNA received from ${peerId}: ${d.archetype} "${d.name}"`);
+  }
+
+  if (message.yjsSync?.update) {
     const update = message.yjsSync.update;
-    if (update instanceof Uint8Array) {
-      stateStore.applyUpdate(update);
-    } else {
-      // Handle case where it might come as a regular array
-      stateStore.applyUpdate(new Uint8Array(update as unknown as ArrayLike<number>));
-    }
+    stateStore.applyUpdate(
+      update instanceof Uint8Array ? update : new Uint8Array(update as unknown as ArrayLike<number>)
+    );
   }
 });
 
 // Heartbeat broadcast loop
 setInterval(async () => {
+  const cycleStart = performance.now();
+
   const metrics = bioMonitor.getMetrics();
   const mood = bioMonitor.getMood();
 
   if (metrics) {
-    // Update local state
-    stateStore.updateMyState({
-      mood: mood,
-      hardware: metrics,
+    stateStore.updateMyVolatile({
+      mood,
+      cpuUsage: metrics.cpuUsage,
+      ramUsage: metrics.ramUsage,
     });
 
-    // Broadcast heartbeat
+    const myState = stateStore.getMyState();
+
     const heartbeat = createHeartbeat({
       peerId: myId,
       cpuUsage: metrics.cpuUsage,
       ramUsage: metrics.ramUsage,
-      x: stateStore.getMyState()?.position.x || 0,
-      y: stateStore.getMyState()?.position.y || 0,
-      mood: mood,
+      x: myState?.position.x ?? 0,
+      y: myState?.position.y ?? 0,
+      mood,
     });
 
-    const t0 = performance.now();
     let success = true;
-
     try {
       await network.broadcast(heartbeat);
     } catch (error) {
@@ -164,7 +248,7 @@ setInterval(async () => {
       logger.error('Heartbeat broadcast failed:', error);
     }
 
-    const latencyMs = Math.round(performance.now() - t0);
+    const cycleMs = Math.round(performance.now() - cycleStart);
     const peerCount = network.getPeerCount();
     const knownPeers = stateStore.getPeerCount();
 
@@ -174,7 +258,7 @@ setInterval(async () => {
         idPrefix: 'hb',
         source: 'daemon-heartbeat',
         success,
-        latencyMs,
+        latencyMs: cycleMs,
         meta: {
           connectedPeers: peerCount,
           knownPeers,
@@ -186,13 +270,17 @@ setInterval(async () => {
     }
 
     logger.info(
-      `Heartbeat (${peerCount} connected, ${knownPeers} known) | ${mood} | CPU: ${metrics.cpuUsage}% | ${latencyMs}ms`
+      `Heartbeat (${peerCount} connected, ${knownPeers} known) | ${mood} | CPU: ${metrics.cpuUsage}% | cycle: ${cycleMs}ms`
     );
+
+    broadcastStateSse({ peers: stateStore.getAllPeers() });
   }
 }, config.heartbeatInterval);
 
 logger.info('');
 logger.info('Daemon running. Press Ctrl+C to stop.');
+
+social.start();
 
 // Periodic state snapshot
 const snapshotInterval = setInterval(() => {
@@ -208,11 +296,9 @@ const shutdown = async () => {
   logger.info('');
   logger.info('Shutting down...');
   clearInterval(snapshotInterval);
-  try {
-    stateStore.saveSnapshot(snapshotPath);
-  } catch (error) {
-    logger.warn('Final state snapshot save failed:', error);
-  }
+  try { stateStore.saveSnapshot(snapshotPath); } catch { /* ignore */ }
+  episodeLogger?.destroy();
+  social.stop();
   await httpServer.close();
   bioMonitor.stop();
   await network.stop();

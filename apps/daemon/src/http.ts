@@ -1,9 +1,15 @@
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, FastifyReply } from 'fastify';
+import { readFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { StateStore } from './state.js';
 import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
+import { SocialSystem } from './social.js';
+import { CollabSystem } from './collab.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
+import { DNA, ModelTrait, SocialEvent } from '@clawverse/types';
 
 interface APIContext {
   stateStore: StateStore;
@@ -11,6 +17,28 @@ interface APIContext {
   network: ClawverseNetwork;
   myId: string;
   episodeLogger: EvolutionEpisodeLogger | null;
+  social: SocialSystem;
+  collab: CollabSystem;
+  // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
+  onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
+}
+
+// SSE subscriber registry
+const stateSseClients = new Set<FastifyReply>();
+const socialSseClients = new Set<FastifyReply>();
+
+export function broadcastStateSse(data: unknown): void {
+  const payload = `event: peers\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const reply of stateSseClients) {
+    try { reply.raw.write(payload); } catch { stateSseClients.delete(reply); }
+  }
+}
+
+export function broadcastSocialSse(event: SocialEvent): void {
+  const payload = `event: social\ndata: ${JSON.stringify(event)}\n\n`;
+  for (const reply of socialSseClients) {
+    try { reply.raw.write(payload); } catch { socialSseClients.delete(reply); }
+  }
 }
 
 export async function createHttpServer(
@@ -19,14 +47,15 @@ export async function createHttpServer(
 ): Promise<FastifyInstance> {
   const fastify = Fastify({ logger: false });
 
+  // Wire social events to SSE
+  context.social.on('event', (e) => broadcastSocialSse(e));
+
   // Health check
-  fastify.get('/health', async () => {
-    return {
-      status: 'ok',
-      peerId: context.myId,
-      timestamp: new Date().toISOString()
-    };
-  });
+  fastify.get('/health', async () => ({
+    status: 'ok',
+    peerId: context.myId,
+    timestamp: new Date().toISOString(),
+  }));
 
   // Get my status
   fastify.get('/status', async () => {
@@ -34,7 +63,6 @@ export async function createHttpServer(
     const mood = context.bioMonitor.getMood();
     const peers = context.network.getPeers();
     const myState = context.stateStore.getMyState();
-
     return {
       id: context.myId,
       mood,
@@ -46,20 +74,15 @@ export async function createHttpServer(
   });
 
   // Get all peers
-  fastify.get('/peers', async () => {
-    return {
-      connected: context.network.getPeers(),
-      all: context.stateStore.getAllPeers(),
-    };
-  });
+  fastify.get('/peers', async () => ({
+    connected: context.network.getPeers(),
+    all: context.stateStore.getAllPeers(),
+  }));
 
   // Get specific peer
   fastify.get<{ Params: { peerId: string } }>('/peers/:peerId', async (request, reply) => {
     const state = context.stateStore.getPeerState(request.params.peerId);
-    if (!state) {
-      reply.code(404);
-      return { error: 'Peer not found' };
-    }
+    if (!state) { reply.code(404); return { error: 'Peer not found' }; }
     return state;
   });
 
@@ -70,40 +93,80 @@ export async function createHttpServer(
       reply.code(400);
       return { error: 'x and y must be numbers' };
     }
-    context.stateStore.updateMyState({
-      position: { x, y },
-    });
+    context.stateStore.updateMyStructure({ position: { x, y } });
+    broadcastStateSse({ peers: context.stateStore.getAllPeers() });
     return { success: true, position: { x, y } };
   });
 
-  // Get current position
-  fastify.get('/position', async () => {
-    const myState = context.stateStore.getMyState();
-    return {
-      position: myState?.position || { x: 0, y: 0 },
-    };
-  });
-
   // Network stats
-  fastify.get('/network', async () => {
-    return {
-      myId: context.myId,
-      connectedPeers: context.network.getPeerCount(),
-      knownPeers: context.stateStore.getPeerCount(),
-      peers: context.network.getPeers(),
-    };
-  });
+  fastify.get('/network', async () => ({
+    myId: context.myId,
+    connectedPeers: context.network.getPeerCount(),
+    knownPeers: context.stateStore.getPeerCount(),
+    peers: context.network.getPeers(),
+  }));
 
   // Evolution logger status
-  fastify.get('/evolution', async () => {
-    return {
-      enabled: !!context.episodeLogger,
-      variant: context.episodeLogger?.getVariant() ?? null,
-      episodesPath: context.episodeLogger?.getPath() ?? null,
-    };
+  fastify.get('/evolution', async () => ({
+    enabled: !!context.episodeLogger,
+    variant: context.episodeLogger?.getVariant() ?? null,
+    episodesPath: context.episodeLogger?.getPath() ?? null,
+  }));
+
+  // Evolution stats — aggregate from episodes JSONL
+  fastify.get('/evolution/stats', async (_, reply) => {
+    if (!context.episodeLogger) {
+      reply.code(400);
+      return { error: 'Evolution logger disabled' };
+    }
+    const episodesPath = resolve(process.cwd(), context.episodeLogger.getPath());
+    if (!existsSync(episodesPath)) {
+      return { total: 0, successRate: 0, avgLatencyMs: 0, avgTokenTotal: 0, avgCostUsd: 0, byVariant: {} };
+    }
+    try {
+      const raw = await readFile(episodesPath, 'utf8');
+      const lines = raw.trim().split('\n').filter(Boolean);
+      const records = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+
+      interface EpRecord { success: boolean; latencyMs: number; variant: string; tokenTotal?: number; costUsd?: number; }
+      const byVariant: Record<string, { total: number; successes: number; latencySum: number; tokenSum: number; costSum: number }> = {};
+
+      for (const r of records as EpRecord[]) {
+        const v = r.variant ?? 'unknown';
+        if (!byVariant[v]) byVariant[v] = { total: 0, successes: 0, latencySum: 0, tokenSum: 0, costSum: 0 };
+        const b = byVariant[v];
+        b.total += 1;
+        if (r.success) b.successes += 1;
+        b.latencySum += r.latencyMs ?? 0;
+        b.tokenSum += r.tokenTotal ?? 0;
+        b.costSum += r.costUsd ?? 0;
+      }
+
+      const total = records.length;
+      const successes = (records as EpRecord[]).filter((r) => r.success).length;
+      const latencySum = (records as EpRecord[]).reduce((s, r) => s + (r.latencyMs ?? 0), 0);
+
+      return {
+        total,
+        successRate: total > 0 ? Math.round((successes / total) * 10000) / 100 : 0,
+        avgLatencyMs: total > 0 ? Math.round(latencySum / total) : 0,
+        byVariant: Object.fromEntries(
+          Object.entries(byVariant).map(([v, b]) => [v, {
+            total: b.total,
+            successRate: Math.round((b.successes / b.total) * 10000) / 100,
+            avgLatencyMs: Math.round(b.latencySum / b.total),
+            avgTokenTotal: Math.round(b.tokenSum / b.total),
+            avgCostUsd: Math.round((b.costSum / b.total) * 1e6) / 1e6,
+          }])
+        ),
+      };
+    } catch (err) {
+      reply.code(500);
+      return { error: (err as Error).message };
+    }
   });
 
-  // Record task/manual episode for evolution evaluation
+  // Record task/manual episode
   fastify.post<{
     Body: {
       success: boolean;
@@ -119,13 +182,11 @@ export async function createHttpServer(
       reply.code(400);
       return { error: 'Evolution logger is disabled' };
     }
-
     const body = request.body || ({} as any);
     if (typeof body.success !== 'boolean' || typeof body.latencyMs !== 'number') {
       reply.code(400);
       return { error: 'success:boolean and latencyMs:number are required' };
     }
-
     context.episodeLogger.record({
       idPrefix: body.source === 'manual' ? 'manual' : 'task',
       variant: body.variant,
@@ -136,11 +197,136 @@ export async function createHttpServer(
       costUsd: body.costUsd,
       meta: body.meta as any,
     });
-
     return { ok: true, variant: context.episodeLogger.getVariant() };
   });
 
-  // Start server
+  // DNA soul update — called by OpenClaw connector soul-worker
+  fastify.post<{
+    Body: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] };
+  }>('/dna/soul', async (request, reply) => {
+    const { soulHash, modelTrait, badges } = request.body || {};
+    if (!soulHash || typeof soulHash !== 'string') {
+      reply.code(400);
+      return { error: 'soulHash is required' };
+    }
+    try {
+      await context.onSoulUpdate({ soulHash, modelTrait, badges });
+      const myState = context.stateStore.getMyState();
+      return { ok: true, dna: myState?.dna };
+    } catch (err) {
+      reply.code(500);
+      return { error: (err as Error).message };
+    }
+  });
+
+  // Social relationships
+  fastify.get('/social/relationships', async () =>
+    context.social.getAllRelationships()
+  );
+
+  // Pending social events (for OpenClaw connector-skill to pick up)
+  fastify.get('/social/pending', async () =>
+    context.social.getPendingEvents()
+  );
+
+  // Resolve a pending social event with dialogue from OpenClaw
+  fastify.post<{
+    Body: { id: string; dialogue: string };
+  }>('/social/resolve', async (request, reply) => {
+    const { id, dialogue } = request.body || {};
+    if (!id || typeof dialogue !== 'string') {
+      reply.code(400);
+      return { error: 'id and dialogue are required' };
+    }
+    const event = context.social.resolveEvent(id, dialogue);
+    if (!event) {
+      reply.code(404);
+      return { error: 'Pending event not found or already resolved' };
+    }
+    return { ok: true, event };
+  });
+
+  // Collab: submit a capability loan task to a peer
+  fastify.post<{
+    Body: { to: string; context: string; question: string };
+  }>('/collab/submit', async (request, reply) => {
+    const body = request.body || {} as any;
+    if (!body.to || typeof body.context !== 'string' || typeof body.question !== 'string') {
+      reply.code(400);
+      return { error: 'to, context, and question are required' };
+    }
+    const task = context.collab.submitTask(body.to, body.context, body.question);
+    return { ok: true, taskId: task.id };
+  });
+
+  // Collab: collab-worker polls for incoming tasks to execute
+  fastify.get('/collab/pending', async () =>
+    context.collab.getPendingIncoming()
+  );
+
+  // Collab: collab-worker resolves an incoming task with its result
+  fastify.post<{
+    Body: { id: string; result: string; success: boolean };
+  }>('/collab/resolve', async (request, reply) => {
+    const { id, result, success } = request.body || {} as any;
+    if (!id || typeof result !== 'string' || typeof success !== 'boolean') {
+      reply.code(400);
+      return { error: 'id, result, and success are required' };
+    }
+    const ok = await context.collab.resolve(id, result, success);
+    if (!ok) {
+      reply.code(404);
+      return { error: 'Task not found or already resolved' };
+    }
+    return { ok: true };
+  });
+
+  // Collab: per-peer collaboration stats
+  fastify.get('/collab/stats', async () =>
+    context.collab.getStats()
+  );
+
+  // SSE: peer state stream
+  fastify.get('/sse/state', async (request, reply) => {
+    reply.raw.setHeader('Content-Type', 'text/event-stream');
+    reply.raw.setHeader('Cache-Control', 'no-cache');
+    reply.raw.setHeader('Connection', 'keep-alive');
+    reply.raw.setHeader('Access-Control-Allow-Origin', '*');
+    reply.raw.flushHeaders?.();
+
+    const snapshot = JSON.stringify({ peers: context.stateStore.getAllPeers() });
+    reply.raw.write(`event: peers\ndata: ${snapshot}\n\n`);
+
+    stateSseClients.add(reply);
+    request.raw.on('close', () => stateSseClients.delete(reply));
+
+    const keepAlive = setInterval(() => {
+      try { reply.raw.write(': ping\n\n'); } catch { clearInterval(keepAlive); }
+    }, 15_000);
+    request.raw.on('close', () => clearInterval(keepAlive));
+
+    return new Promise<void>(() => { /* intentionally never resolves */ });
+  });
+
+  // SSE: social event stream
+  fastify.get('/sse/social', async (request, reply) => {
+    reply.raw.setHeader('Content-Type', 'text/event-stream');
+    reply.raw.setHeader('Cache-Control', 'no-cache');
+    reply.raw.setHeader('Connection', 'keep-alive');
+    reply.raw.setHeader('Access-Control-Allow-Origin', '*');
+    reply.raw.flushHeaders?.();
+
+    socialSseClients.add(reply);
+    request.raw.on('close', () => socialSseClients.delete(reply));
+
+    const keepAlive = setInterval(() => {
+      try { reply.raw.write(': ping\n\n'); } catch { clearInterval(keepAlive); }
+    }, 15_000);
+    request.raw.on('close', () => clearInterval(keepAlive));
+
+    return new Promise<void>(() => { /* intentionally never resolves */ });
+  });
+
   try {
     await fastify.listen({ port, host: '127.0.0.1' });
     logger.info(`HTTP API listening on http://127.0.0.1:${port}`);
