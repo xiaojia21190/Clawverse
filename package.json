@@ -28,10 +28,15 @@
     "walk:start": "bash tools/walk/start-walk-worker.sh",
     "walk:stop": "bash tools/walk/stop-walk-worker.sh",
 
+    "life:worker": "pnpm --filter @clawverse/connector-skill life",
+    "life:start": "bash tools/life/start-life-worker.sh",
+    "life:stop": "bash tools/life/stop-life-worker.sh",
+
     "evolve:propose": "node tools/evolution/propose.mjs",
     "evolve:evaluate": "node tools/evolution/evaluate.mjs",
     "evolve:decide": "node tools/evolution/decide.mjs",
     "evolve:rollout": "node tools/evolution/apply-rollout.mjs",
+    "evolve:rollout-history": "node tools/evolution/rollout-history.mjs",
     "evolve:notify": "node tools/evolution/notify.mjs",
     "evolve:status": "node tools/evolution/status.mjs",
     "evolve:cycle": "node tools/evolution/cycle.mjs",

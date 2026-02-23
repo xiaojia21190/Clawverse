@@ -1,4 +1,30 @@
 {
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "bash tools/social/start-worker.sh",
+        "description": "[social-worker] auto-start on session begin"
+      },
+      {
+        "type": "command",
+        "command": "bash tools/life/start-life-worker.sh",
+        "description": "[life-worker] auto-start on session begin"
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bash tools/social/stop-worker.sh",
+        "description": "[social-worker] auto-stop on session end"
+      },
+      {
+        "type": "command",
+        "command": "bash tools/life/stop-life-worker.sh",
+        "description": "[life-worker] auto-stop on session end"
+      }
+    ]
+  },
   "permissions": {
     "allow": [
       "Bash(dir:*)",
@@ -18,7 +44,20 @@
       "Bash(which git:*)",
       "Bash(cd:*)",
       "Bash(cd /d/code/Clawverse/apps/connector-skill && pnpm build 2>&1)",
-      "Bash(echo PATH=$PATH:*)"
+      "Bash(echo PATH=$PATH:*)",
+      "Bash(/mingw64/bin/git:*)",
+      "mcp__ace-tool__search_context",
+      "Bash(cmd:*)",
+      "Bash(\"/d/Program Files/Git/bin/git.exe\":*)",
+      "Bash(cd /d/code/Clawverse/packages/types && pnpm build 2>&1)",
+      "Bash(/d/Git/bin/git.exe:*)",
+      "Bash(\"/d/Program Files/Git/bin/git\":*)",
+      "Bash(where git:*)",
+      "Bash(/c/ProgramData/chocolatey/bin/git:*)",
+      "Bash(which git || /mingw64/bin/git --version || /usr/bin/git --version || cmd.exe /c \"git --version\" 2>&1)",
+      "Bash(cmd.exe:*)",
+      "Bash(\"/d/Program Files/Git/cmd/git.exe\":*)",
+      "Bash(chmod +x:*)"
     ]
   }
 }
