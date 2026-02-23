@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { Mood } from '@clawverse/types';
+import { logger } from './logger.js';
 
 export type NeedKey = 'social' | 'tasked' | 'wanderlust' | 'creative';
 
@@ -15,13 +16,14 @@ export interface NeedsState {
 const NEEDS_PATH = resolve(process.cwd(), 'data/life/needs.json');
 const CRITICAL_THRESHOLD = 15;
 const WARNING_THRESHOLD = 30;
-const INITIAL_VALUE = 80;
+const INITIAL_NEED_VALUE = 80;
 const MOOD_SCALE: Mood[] = ['idle', 'working', 'busy', 'stressed', 'distressed'];
+const NEED_KEYS: NeedKey[] = ['social', 'tasked', 'wanderlust', 'creative'];
 
 export class NeedsSystem {
   private state: NeedsState = {
-    social: INITIAL_VALUE, tasked: INITIAL_VALUE,
-    wanderlust: INITIAL_VALUE, creative: INITIAL_VALUE,
+    social: INITIAL_NEED_VALUE, tasked: INITIAL_NEED_VALUE,
+    wanderlust: INITIAL_NEED_VALUE, creative: INITIAL_NEED_VALUE,
     updatedAt: new Date().toISOString(),
   };
   private readonly decayPerTick: number;
@@ -34,7 +36,7 @@ export class NeedsSystem {
   }
 
   tick(): void {
-    for (const key of ['social', 'tasked', 'wanderlust', 'creative'] as NeedKey[]) {
+    for (const key of NEED_KEYS) {
       this.state[key] = Math.max(0, this.state[key] - this.decayPerTick);
     }
     this.state.updatedAt = new Date().toISOString();
@@ -56,13 +58,12 @@ export class NeedsSystem {
 
   applyNeedsMood(bioMood: Mood): Mood {
     if (bioMood === 'sleeping') return 'sleeping';
-    const keys: NeedKey[] = ['social', 'tasked', 'wanderlust', 'creative'];
-    const criticalCount = keys.filter(k => this.state[k] < CRITICAL_THRESHOLD).length;
-    const warningCount  = keys.filter(k => this.state[k] < WARNING_THRESHOLD).length;
-    const allHigh       = keys.every(k => this.state[k] > 60);
+    const criticalCount = NEED_KEYS.filter(k => this.state[k] < CRITICAL_THRESHOLD).length;
+    const warningCount  = NEED_KEYS.filter(k => this.state[k] < WARNING_THRESHOLD).length;
+    const allHigh       = NEED_KEYS.every(k => this.state[k] > 60);
 
     if (criticalCount >= 2) return 'distressed';
-    const idx = MOOD_SCALE.indexOf(bioMood as typeof MOOD_SCALE[number]);
+    const idx = MOOD_SCALE.indexOf(bioMood);
     const safeIdx = idx === -1 ? 1 : idx;
     if (warningCount >= 1) return MOOD_SCALE[Math.min(MOOD_SCALE.length - 1, safeIdx + 1)];
     if (allHigh)           return MOOD_SCALE[Math.max(0, safeIdx - 1)];
@@ -71,7 +72,12 @@ export class NeedsSystem {
 
   private _load(): void {
     if (!existsSync(NEEDS_PATH)) return;
-    try { this.state = JSON.parse(readFileSync(NEEDS_PATH, 'utf8')); } catch { /* ignore */ }
+    try {
+      this.state = JSON.parse(readFileSync(NEEDS_PATH, 'utf8'));
+    } catch (err) {
+      if (err instanceof SyntaxError) return; // corrupted data, start fresh
+      logger.error(`[needs] failed to load state: ${(err as Error).message}`);
+    }
   }
 
   private _save(): void {
