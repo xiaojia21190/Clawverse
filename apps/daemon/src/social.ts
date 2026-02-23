@@ -5,6 +5,7 @@ import {
   SocialEvent,
   SocialRelationship,
   SocialTrigger,
+  RelationshipTier,
   PeerState,
 } from '@clawverse/types';
 import { logger } from './logger.js';
@@ -95,7 +96,11 @@ export class SocialSystem extends EventEmitter {
   }
 
   // Called by HTTP handler when OpenClaw resolves a pending event
-  resolveEvent(id: string, dialogue: string): SocialEvent | null {
+  resolveEvent(
+    id: string,
+    dialogue: string,
+    onTierChange?: (prev: RelationshipTier, next: RelationshipTier, peerId: string) => void,
+  ): SocialEvent | null {
     const pending = this.pending.get(id);
     if (!pending) return null;
 
@@ -107,6 +112,11 @@ export class SocialSystem extends EventEmitter {
     rel.sentiment = Math.min(1, rel.sentiment + 0.05);
     rel.meetCount = pending.meetCount + 1;
     rel.lastMet = new Date().toISOString();
+    rel.interactionCount = (rel.interactionCount ?? 0) + 1;
+
+    this._recomputeTier(rel, (prev, next) => {
+      if (onTierChange) onTierChange(prev, next, pending.to);
+    }, pending.toName ?? '');
 
     const event: SocialEvent = {
       id: pending.id,
@@ -219,11 +229,42 @@ export class SocialSystem extends EventEmitter {
     return 'Residential';
   }
 
+  getTier(peerId: string): RelationshipTier {
+    return this.relationships.get(peerId)?.tier ?? 'stranger';
+  }
+
+  private _recomputeTier(
+    rel: SocialRelationship,
+    onMilestone?: (prev: RelationshipTier, next: RelationshipTier, peerName: string) => void,
+    peerName = '',
+  ): void {
+    const prev = rel.tier ?? 'stranger';
+    const ic = rel.interactionCount ?? 0;
+    const s = rel.sentiment;
+
+    let tier: RelationshipTier = 'stranger';
+    if      (ic >= 15 && s >  0.6) tier = 'ally';
+    else if (ic >=  8 && s >  0.3) tier = 'friend';
+    else if (ic >=  3 && s >  0  ) tier = 'acquaintance';
+    else if (ic >=  8 && s < -0.5) tier = 'nemesis';
+    else if (ic >=  3 && s < -0.2) tier = 'rival';
+
+    rel.tier = tier;
+    if (tier !== prev) {
+      rel.notableEvents = [
+        ...(rel.notableEvents ?? []).slice(-4),
+        `became ${tier} with ${peerName || rel.peerId}`,
+      ];
+      if (onMilestone) onMilestone(prev, tier, peerName);
+    }
+  }
+
   private _getOrCreateRel(peerId: string): SocialRelationship {
     if (!this.relationships.has(peerId)) {
       this.relationships.set(peerId, {
         peerId, meetCount: 0, sentiment: 0,
         lastMet: new Date().toISOString(), tags: [],
+        interactionCount: 0, tier: 'stranger', notableEvents: [],
       });
     }
     return this.relationships.get(peerId)!;

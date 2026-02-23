@@ -159,12 +159,17 @@ export interface SocialEvent {
   sentimentAfter: number;
 }
 
+export type RelationshipTier = 'nemesis' | 'rival' | 'stranger' | 'acquaintance' | 'friend' | 'ally';
+
 export interface SocialRelationship {
   peerId: string;
   meetCount: number;
   sentiment: number; // -1 to 1
   lastMet: string;   // ISO string
   tags: string[];
+  interactionCount: number;
+  tier: RelationshipTier;
+  notableEvents: string[];
 }
 
 export interface LlmConfig {
