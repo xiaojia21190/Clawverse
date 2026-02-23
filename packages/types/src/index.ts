@@ -39,11 +39,12 @@ export interface Position {
 // =====================
 
 export type Mood =
-  | 'idle'      // CPU < 20%
-  | 'working'   // CPU 20-60%
-  | 'busy'      // CPU 60-80%
-  | 'stressed'  // CPU > 80%
-  | 'sleeping'; // Offline/inactive
+  | 'idle'        // CPU < 20%
+  | 'working'     // CPU 20-60%
+  | 'busy'        // CPU 60-80%
+  | 'stressed'    // CPU > 80%
+  | 'distressed'  // needs critical (set by NeedsSystem)
+  | 'sleeping';   // Offline/inactive
 
 // =====================
 // DNA & Identity
