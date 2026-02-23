@@ -4,6 +4,9 @@ dist/
 *.log
 .env
 .env.local
+docs/
+.claude
+.ai_memory
 
 data/evolution/proposals/*.json
 data/evolution/proposals/LATEST
