@@ -7,9 +7,12 @@ import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
 import { SocialSystem } from './social.js';
 import { CollabSystem } from './collab.js';
+import { NeedsSystem } from './needs.js';
+import { SkillsTracker } from './skills.js';
+import { EventEngine } from './events.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
-import { DNA, ModelTrait, SocialEvent } from '@clawverse/types';
+import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
 
 interface APIContext {
   stateStore: StateStore;
@@ -19,6 +22,9 @@ interface APIContext {
   episodeLogger: EvolutionEpisodeLogger | null;
   social: SocialSystem;
   collab: CollabSystem;
+  needs: NeedsSystem;
+  skills: SkillsTracker;
+  events: EventEngine;
   // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
 }
@@ -39,6 +45,16 @@ export function broadcastSocialSse(event: SocialEvent): void {
   for (const reply of socialSseClients) {
     try { reply.raw.write(payload); } catch { socialSseClients.delete(reply); }
   }
+}
+
+function locationName(pos: { x: number; y: number }): string {
+  if (pos.x < 10 && pos.y < 10) return 'Plaza';
+  if (pos.x >= 10 && pos.x < 20 && pos.y < 10) return 'Market';
+  if (pos.x < 10 && pos.y >= 10 && pos.y < 20) return 'Library';
+  if (pos.x >= 10 && pos.x < 20 && pos.y >= 10 && pos.y < 20) return 'Workshop';
+  if (pos.x < 10 && pos.y >= 20) return 'Park';
+  if (pos.x >= 10 && pos.x < 20 && pos.y >= 20) return 'Tavern';
+  return 'Residential';
 }
 
 export async function createHttpServer(
@@ -93,9 +109,16 @@ export async function createHttpServer(
       reply.code(400);
       return { error: 'x and y must be numbers' };
     }
-    context.stateStore.updateMyStructure({ position: { x, y } });
+    const prevState = context.stateStore.getMyState();
+    const prevZone = locationName(prevState?.position ?? { x: 0, y: 0 });
+    const newPos = { x, y };
+    context.stateStore.updateMyStructure({ position: newPos });
     broadcastStateSse({ peers: context.stateStore.getAllPeers() });
-    return { success: true, position: { x, y } };
+    const newZone = locationName(newPos);
+    context.needs.satisfy('wanderlust', 25);
+    const lu = context.skills.gainXP('explorer', newZone !== prevZone ? 3 : 1);
+    if (lu) context.events.emit('skill_levelup', { skill: lu.skill, level: lu.level });
+    return { success: true, position: newPos };
   });
 
   // Network stats
@@ -211,6 +234,9 @@ export async function createHttpServer(
     }
     try {
       await context.onSoulUpdate({ soulHash, modelTrait, badges });
+      context.needs.satisfy('creative', 15);
+      const lu = context.skills.gainXP('analyst', 5);
+      if (lu) context.events.emit('skill_levelup', { skill: lu.skill, level: lu.level });
       const myState = context.stateStore.getMyState();
       return { ok: true, dna: myState?.dna };
     } catch (err) {
@@ -238,11 +264,18 @@ export async function createHttpServer(
       reply.code(400);
       return { error: 'id and dialogue are required' };
     }
-    const event = context.social.resolveEvent(id, dialogue);
+    const event = context.social.resolveEvent(id, dialogue, (prev, next, peerId) => {
+      context.events.emit('relationship_milestone', { prev, next, peerId });
+    });
     if (!event) {
       reply.code(404);
       return { error: 'Pending event not found or already resolved' };
     }
+    const tier = context.social.getTier(event.to);
+    const multiplier = tier === 'ally' ? 1.5 : tier === 'nemesis' ? 0.25 : 1;
+    context.needs.satisfy('social', Math.round(20 * multiplier));
+    const lu = context.skills.gainXP('social', 2);
+    if (lu) context.events.emit('skill_levelup', { skill: lu.skill, level: lu.level });
     return { ok: true, event };
   });
 
@@ -278,6 +311,9 @@ export async function createHttpServer(
       reply.code(404);
       return { error: 'Task not found or already resolved' };
     }
+    context.needs.satisfy('tasked', success ? 30 : 5);
+    const lu = context.skills.gainXP('collab', success ? 5 : 1);
+    if (lu) context.events.emit('skill_levelup', { skill: lu.skill, level: lu.level });
     return { ok: true };
   });
 
@@ -285,6 +321,20 @@ export async function createHttpServer(
   fastify.get('/collab/stats', async () =>
     context.collab.getStats()
   );
+
+  // Life system endpoints
+  fastify.get('/life/needs', async () => context.needs.getNeeds());
+  fastify.get('/life/skills', async () => context.skills.getSkills());
+  fastify.get('/life/events/pending', async () => context.events.getPending());
+  fastify.post<{ Params: { id: string } }>(
+    '/life/events/resolve/:id',
+    async (request, reply) => {
+      const ok = context.events.resolve(request.params.id);
+      if (!ok) { reply.code(404); return { error: 'Event not found or already resolved' }; }
+      return { ok: true };
+    }
+  );
+  fastify.get('/life/relationships', async () => context.social.getAllRelationships());
 
   // SSE: peer state stream
   fastify.get('/sse/state', async (request, reply) => {

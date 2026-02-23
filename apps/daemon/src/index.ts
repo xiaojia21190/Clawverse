@@ -13,6 +13,9 @@ import { loadSecurityConfig, validateSecurityConfig } from './security.js';
 import { computeHardwareHash, generateDNAFromHashes, generateDNA, dnaToName } from './dna.js';
 import { SocialSystem } from './social.js';
 import { CollabSystem } from './collab.js';
+import { NeedsSystem, NeedKey } from './needs.js';
+import { SkillsTracker } from './skills.js';
+import { EventEngine } from './events.js';
 
 const config = loadConfig();
 const securityConfig = loadSecurityConfig();
@@ -59,6 +62,7 @@ if (episodeLogger) {
 }
 
 let heartbeatTick = 0;
+let distressedTicks = 0;
 
 // Initialize State Store
 const stateStore = new StateStore();
@@ -116,6 +120,12 @@ collab.init({
   },
 });
 
+// Initialize Life Systems
+const needs  = new NeedsSystem(config.heartbeatInterval);
+const skills = new SkillsTracker();
+const events = new EventEngine();
+events.start();
+
 // Broadcast latest DNA announce to all connected peers
 async function rebroadcastAnnounce(): Promise<void> {
   const peers = network.getPeers();
@@ -157,6 +167,9 @@ const httpServer = await createHttpServer(config.port, {
   episodeLogger,
   social,
   collab,
+  needs,
+  skills,
+  events,
   onSoulUpdate,
 });
 
@@ -257,7 +270,9 @@ setInterval(async () => {
   const cycleStart = performance.now();
 
   const metrics = bioMonitor.getMetrics();
-  const mood = bioMonitor.getMood();
+  needs.tick();
+  const bioMood = bioMonitor.getMood();
+  const mood    = needs.applyNeedsMood(bioMood);
 
   if (metrics) {
     stateStore.updateMyVolatile({
@@ -311,6 +326,26 @@ setInterval(async () => {
     );
 
     broadcastStateSse({ peers: stateStore.getAllPeers() });
+
+    // Emit need_critical events
+    for (const need of ['social', 'tasked', 'wanderlust', 'creative'] as NeedKey[]) {
+      if (needs.isCritical(need)) events.emit('need_critical', { need });
+    }
+
+    // Track distressed ticks for mood_crisis
+    if (mood === 'distressed') {
+      distressedTicks++;
+      if (distressedTicks >= 3) {
+        events.emit('mood_crisis', { ticks: distressedTicks });
+        distressedTicks = 0;
+      }
+    } else {
+      distressedTicks = 0;
+    }
+
+    // Emit faction_forming if 3+ allies
+    const allyCount = social.getAllRelationships().filter(r => r.tier === 'ally').length;
+    if (allyCount >= 3) events.emit('faction_forming', { allyCount });
   }
 }, config.heartbeatInterval);
 
