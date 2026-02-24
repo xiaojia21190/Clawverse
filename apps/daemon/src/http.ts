@@ -10,6 +10,7 @@ import { CollabSystem } from './collab.js';
 import { NeedsSystem } from './needs.js';
 import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
+import { EconomySystem } from './economy.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
@@ -25,6 +26,7 @@ interface APIContext {
   needs: NeedsSystem;
   skills: SkillsTracker;
   events: EventEngine;
+  economy: EconomySystem;
   // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
 }
@@ -335,6 +337,32 @@ export async function createHttpServer(
     }
   );
   fastify.get('/life/relationships', async () => context.social.getAllRelationships());
+
+  // Economy endpoints
+  fastify.get('/economy/resources', async () => context.economy.getResources());
+
+  fastify.post('/economy/trade', async (request, reply) => {
+    const { toId, resource, amount } = request.body as { toId: string; resource: string; amount: number };
+    const validResources = ['compute', 'storage', 'bandwidth', 'reputation'];
+    if (!validResources.includes(resource) || amount <= 0) {
+      return reply.code(400).send({ error: 'invalid resource or amount' });
+    }
+    const myState = context.stateStore.getMyState();
+    const myZone = locationName(myState?.position ?? { x: 0, y: 0 });
+    if (myZone !== 'Market') {
+      return reply.code(403).send({ error: 'trading only available in Market zone' });
+    }
+    const ok = context.economy.consume(resource as any, amount);
+    if (!ok) return reply.code(400).send({ error: 'insufficient resources' });
+    context.economy.recordTrade(context.myId, toId, resource, amount);
+    return { success: true };
+  });
+
+  fastify.get('/economy/market', async () => {
+    const peers = context.stateStore.getAllPeers();
+    const marketPeers = peers.filter(p => locationName(p.position) === 'Market');
+    return { peers: marketPeers.map(p => ({ id: p.id, name: p.name, position: p.position })) };
+  });
 
   // SSE: peer state stream
   fastify.get('/sse/state', async (request, reply) => {

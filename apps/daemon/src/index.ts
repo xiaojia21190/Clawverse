@@ -16,6 +16,7 @@ import { CollabSystem } from './collab.js';
 import { NeedsSystem, NeedKey } from './needs.js';
 import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
+import { EconomySystem } from './economy.js';
 
 const config = loadConfig();
 const securityConfig = loadSecurityConfig();
@@ -124,6 +125,7 @@ collab.init({
 const needs  = new NeedsSystem(config.heartbeatInterval);
 const skills = new SkillsTracker();
 const events = new EventEngine();
+const economy = new EconomySystem();
 events.start();
 
 // Broadcast latest DNA announce to all connected peers
@@ -170,6 +172,7 @@ const httpServer = await createHttpServer(config.port, {
   needs,
   skills,
   events,
+  economy,
   onSoulUpdate,
 });
 
@@ -273,6 +276,7 @@ setInterval(async () => {
   needs.tick();
   const bioMood = bioMonitor.getMood();
   const mood    = needs.applyNeedsMood(bioMood);
+  economy.tick(mood, network.getPeers().length);
 
   if (metrics) {
     stateStore.updateMyVolatile({
