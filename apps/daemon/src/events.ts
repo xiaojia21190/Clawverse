@@ -3,12 +3,13 @@ import { dirname, resolve } from 'node:path';
 import { logger } from './logger.js';
 
 export type LifeEventType =
-  | 'need_critical'
-  | 'skill_levelup'
-  | 'relationship_milestone'
-  | 'mood_crisis'
-  | 'faction_forming'
-  | 'random_event';
+  | 'need_critical' | 'skill_levelup' | 'relationship_milestone'
+  | 'mood_crisis' | 'faction_forming' | 'random_event'
+  | 'resource_drought' | 'cpu_storm' | 'storage_overflow' | 'need_cascade'
+  | 'stranger_arrival' | 'faction_war' | 'peace_treaty' | 'betrayal'
+  | 'skill_tournament' | 'resource_windfall' | 'legendary_builder'
+  | 'epic_journey' | 'legacy_event' | 'faction_founding'
+  | 'great_migration' | 'building_completed';
 
 export interface LifeEvent {
   id: string;
@@ -22,10 +23,12 @@ const EVENTS_LOG = resolve(process.cwd(), 'data/life/events.jsonl');
 const RANDOM_INTERVAL_MS = Number(process.env.CLAWVERSE_LIFE_RANDOM_INTERVAL_MS || 30 * 60_000);
 
 const RANDOM_POOL = [
-  { subtype: 'resource_windfall',  description: 'You discover a high-quality knowledge cache' },
+  { subtype: 'resource_windfall',  description: 'A high-quality knowledge cache surfaces nearby' },
   { subtype: 'cpu_storm',          description: 'A sudden load spike hits the town' },
-  { subtype: 'rumor_spreading',    description: 'A message is propagating through the network' },
+  { subtype: 'rumor_spreading',    description: 'A message propagates through the network' },
   { subtype: 'stranger_knowledge', description: 'An unknown node carries rare information' },
+  { subtype: 'resource_drought',   description: 'Compute resources are running scarce across town' },
+  { subtype: 'skill_tournament',   description: 'A challenge has been issued — compete for glory' },
 ];
 
 export class EventEngine {
