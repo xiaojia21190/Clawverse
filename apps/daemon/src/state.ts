@@ -58,6 +58,10 @@ export class StateStore {
     return this.doc;
   }
 
+  getBuildingsMap(): Y.Map<import('@clawverse/types').Building> {
+    return this.doc.getMap('buildings') as Y.Map<import('@clawverse/types').Building>;
+  }
+
   // Update structural (Yjs-synced) state: DNA, name, position
   updateMyStructure(patch: Partial<Pick<PeerState, 'name' | 'position' | 'dna'>>): void {
     if (!this.myId) return;

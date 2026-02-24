@@ -11,6 +11,7 @@ import { NeedsSystem } from './needs.js';
 import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
+import { WorldMap } from './world.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
@@ -27,6 +28,7 @@ interface APIContext {
   skills: SkillsTracker;
   events: EventEngine;
   economy: EconomySystem;
+  world: WorldMap;
   // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
 }
@@ -337,6 +339,38 @@ export async function createHttpServer(
     }
   );
   fastify.get('/life/relationships', async () => context.social.getAllRelationships());
+
+  fastify.get('/world/map', async () => context.world.getMap());
+
+  fastify.post('/world/build', async (request, reply) => {
+    const { type, x, y } = request.body as { type: string; x: number; y: number };
+    const validTypes = ['forge', 'archive', 'beacon', 'market_stall', 'shelter'];
+    if (!validTypes.includes(type)) return reply.code(400).send({ error: 'invalid building type' });
+    const pos = { x: Math.max(0, Math.min(39, x)), y: Math.max(0, Math.min(39, y)) };
+    const cost = context.world.getBuildingCost(type as any);
+    if (!context.economy.canAfford('compute', cost.compute)) {
+      return reply.code(400).send({ error: `need ${cost.compute} compute` });
+    }
+    if (!context.economy.canAfford('storage', cost.storage)) {
+      return reply.code(400).send({ error: `need ${cost.storage} storage` });
+    }
+    const myState = context.stateStore.getMyState();
+    const building = context.world.build(type as any, pos, context.myId, myState?.name ?? context.myId.slice(0, 8));
+    if (!building) return reply.code(409).send({ error: 'position occupied or invalid' });
+    context.economy.consume('compute', cost.compute);
+    context.economy.consume('storage', cost.storage);
+    context.skills.gainXP('explorer', 5);
+    context.events.emit('building_completed' as any, { buildingType: type, position: pos });
+    broadcastStateSse({ peers: context.stateStore.getAllPeers() });
+    return { success: true, building };
+  });
+
+  fastify.delete('/world/build/:id', async (request, reply) => {
+    const { id } = (request.params as { id: string });
+    const ok = context.world.demolish(id, context.myId);
+    if (!ok) return reply.code(404).send({ error: 'not found or not yours' });
+    return { success: true };
+  });
 
   // Economy endpoints
   fastify.get('/economy/resources', async () => context.economy.getResources());

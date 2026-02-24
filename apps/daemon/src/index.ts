@@ -17,6 +17,7 @@ import { NeedsSystem, NeedKey } from './needs.js';
 import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
+import { WorldMap } from './world.js';
 
 const config = loadConfig();
 const securityConfig = loadSecurityConfig();
@@ -126,6 +127,8 @@ const needs  = new NeedsSystem(config.heartbeatInterval);
 const skills = new SkillsTracker();
 const events = new EventEngine();
 const economy = new EconomySystem();
+const world = new WorldMap();
+world.attachYjs(stateStore.getBuildingsMap());
 events.start();
 
 // Broadcast latest DNA announce to all connected peers
@@ -173,6 +176,7 @@ const httpServer = await createHttpServer(config.port, {
   skills,
   events,
   economy,
+  world,
   onSoulUpdate,
 });
 
