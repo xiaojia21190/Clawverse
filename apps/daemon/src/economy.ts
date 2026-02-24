@@ -1,12 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import type { Mood, ResourceState } from '@clawverse/types';
-import { logger } from './logger.js';
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 export type { ResourceState };
 
-const RESOURCES_PATH = resolve(process.cwd(), 'data/economy/resources.json');
-const TRADES_PATH    = resolve(process.cwd(), 'data/economy/trades.jsonl');
 const CAP = 200;
 
 const INITIAL: ResourceState = {
@@ -15,10 +11,11 @@ const INITIAL: ResourceState = {
 };
 
 export class EconomySystem {
+  private readonly dbHandle: ClawverseDbHandle;
   private state: ResourceState = { ...INITIAL };
 
-  constructor() {
-    mkdirSync(dirname(RESOURCES_PATH), { recursive: true });
+  constructor(opts?: { dbPath?: string }) {
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     this._load();
   }
 
@@ -59,17 +56,61 @@ export class EconomySystem {
 
   getResources(): ResourceState { return { ...this.state }; }
 
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
+  }
+
   recordTrade(fromId: string, toId: string, resource: string, amount: number): void {
-    const entry = JSON.stringify({ ts: new Date().toISOString(), fromId, toId, resource, amount });
-    try { appendFileSync(TRADES_PATH, entry + '\n'); } catch { /* ignore */ }
+    const row = { ts: new Date().toISOString(), fromId, toId, resource, amount };
+    this.dbHandle.db.prepare(`
+      INSERT INTO economy_trades (ts, from_id, to_id, resource, amount, payload_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(row.ts, row.fromId, row.toId, row.resource, row.amount, JSON.stringify(row));
   }
 
   private _load(): void {
-    if (!existsSync(RESOURCES_PATH)) return;
-    try { this.state = JSON.parse(readFileSync(RESOURCES_PATH, 'utf8')); } catch { /* use defaults */ }
+    const row = this.dbHandle.db.prepare(`
+      SELECT compute, storage, bandwidth, reputation, updated_at
+      FROM economy_state
+      WHERE id = 1
+    `).get() as {
+      compute: number;
+      storage: number;
+      bandwidth: number;
+      reputation: number;
+      updated_at: string;
+    } | undefined;
+
+    if (row) {
+      this.state = {
+        compute: row.compute,
+        storage: row.storage,
+        bandwidth: row.bandwidth,
+        reputation: row.reputation,
+        updatedAt: row.updated_at,
+      };
+      return;
+    }
+
+    this._save();
   }
 
   private _save(): void {
-    try { writeFileSync(RESOURCES_PATH, JSON.stringify(this.state, null, 2)); } catch { /* ignore */ }
+    this.dbHandle.db.prepare(`
+      INSERT INTO economy_state (id, compute, storage, bandwidth, reputation, updated_at)
+      VALUES (1, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        compute = excluded.compute,
+        storage = excluded.storage,
+        bandwidth = excluded.bandwidth,
+        reputation = excluded.reputation,
+        updated_at = excluded.updated_at
+    `).run(
+      this.state.compute,
+      this.state.storage,
+      this.state.bandwidth,
+      this.state.reputation,
+      this.state.updatedAt
+    );
   }
 }

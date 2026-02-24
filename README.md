@@ -118,6 +118,8 @@ All options are read from environment variables. Create a `.env` file in `apps/d
 | `PORT` | `19820` | HTTP API port |
 | `TOPIC` | `clawverse-v1` | Hyperswarm discovery topic |
 | `HEARTBEAT_INTERVAL_MS` | `5000` | P2P broadcast interval |
+| `CLAWVERSE_SQLITE_PATH` | `data/state/clawverse.db` | SQLite database path for daemon state |
+| `CLAWVERSE_STATE_SNAPSHOT_PATH` | `data/state/latest.json` | Snapshot key used in SQLite `state_snapshots` table |
 | `REQUIRE_SIGNED_MESSAGES` | `false` | Enforce HMAC on all messages |
 | `SHARED_SECRET` | — | HMAC signing key (required if signing enabled) |
 
@@ -226,25 +228,19 @@ All endpoints are on `http://localhost:19820`.
 
 ## Data Directory
 
-```
+```text
 data/
+├── state/
+│   └── clawverse.db              # daemon runtime storage (SQLite)
 ├── evolution/
-│   ├── episodes/episodes.jsonl   # task execution records
 │   ├── proposals/                # evolution proposals
 │   ├── reports/                  # evaluation reports
 │   ├── decisions/                # promote / hold / rollback decisions
 │   └── summaries/LATEST.md       # latest cycle summary
 ├── security/
 │   └── network.json              # peer allowlist + signing config
-├── social/
-│   ├── events.jsonl              # historical social events
-│   ├── relationships.json        # sentiment graph (-1 to 1)
-│   └── memories/<peerId>.json    # last 5 conversations per peer
-├── collab/
-│   ├── tasks.jsonl               # task log (in/out)
-│   └── stats.json                # per-peer reputation stats
-└── state/
-    └── latest.json               # Yjs CRDT snapshot
+└── social/
+    └── memories/<peerId>.json    # worker-local conversation memory cache
 ```
 
 ---

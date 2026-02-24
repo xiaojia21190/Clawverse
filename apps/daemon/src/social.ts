@@ -1,5 +1,3 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 import {
   SocialEvent,
@@ -9,10 +7,7 @@ import {
   PeerState,
 } from '@clawverse/types';
 import { logger } from './logger.js';
-
-const EVENTS_PATH = resolve(process.cwd(), 'data/social/events.jsonl');
-const RELS_PATH = resolve(process.cwd(), 'data/social/relationships.json');
-const PENDING_PATH = resolve(process.cwd(), 'data/social/pending.jsonl');
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 const SCAN_INTERVAL_MS = 30_000;
 const LLM_COOLDOWN_MS = 30 * 60 * 1000;
@@ -51,20 +46,23 @@ export declare interface SocialSystem {
 }
 
 export class SocialSystem extends EventEmitter {
+  private readonly dbHandle: ClawverseDbHandle;
   private relationships: Map<string, SocialRelationship> = new Map();
   private lastLlmCall: Map<string, number> = new Map();
   private lastEventTime: number = Date.now();
   private scanTimer: NodeJS.Timeout | null = null;
+  private scanRunning = false;
   private myId: string = '';
   private pending: Map<string, PendingEvent> = new Map();
 
   private getPeers: () => PeerState[] = () => [];
   private getMyState: () => PeerState | undefined = () => undefined;
 
-  constructor() {
+  constructor(opts?: { dbPath?: string }) {
     super();
-    this._ensureDirs();
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     this._loadRelationships();
+    this._loadPending();
   }
 
   init(opts: {
@@ -78,7 +76,9 @@ export class SocialSystem extends EventEmitter {
   }
 
   start(): void {
-    this.scanTimer = setInterval(() => this._scan(), SCAN_INTERVAL_MS);
+    this.scanTimer = setInterval(() => {
+      void this._scanTick();
+    }, SCAN_INTERVAL_MS);
     this.scanTimer.unref();
     logger.info('Social system started (OpenClaw-driven mode)');
   }
@@ -86,6 +86,10 @@ export class SocialSystem extends EventEmitter {
   stop(): void {
     if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
     this._saveRelationships();
+  }
+
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
   }
 
   async onPeerConnect(peer: PeerState): Promise<void> {
@@ -106,6 +110,11 @@ export class SocialSystem extends EventEmitter {
 
     pending.resolved = true;
     this.pending.delete(id);
+    this.dbHandle.db.prepare(`
+      UPDATE social_pending
+      SET resolved = 1, payload_json = ?
+      WHERE id = ?
+    `).run(JSON.stringify(pending), id);
 
     const rel = this._getOrCreateRel(pending.to);
     const sentimentBefore = pending.sentimentBefore;
@@ -150,6 +159,18 @@ export class SocialSystem extends EventEmitter {
 
   getAllRelationships(): SocialRelationship[] {
     return Array.from(this.relationships.values());
+  }
+
+  private async _scanTick(): Promise<void> {
+    if (this.scanRunning) return;
+    this.scanRunning = true;
+    try {
+      await this._scan();
+    } catch (err) {
+      logger.warn(`Social scan failed: ${(err as Error).message}`);
+    } finally {
+      this.scanRunning = false;
+    }
   }
 
   private async _scan(): Promise<void> {
@@ -270,35 +291,85 @@ export class SocialSystem extends EventEmitter {
     return this.relationships.get(peerId)!;
   }
 
-  private _ensureDirs(): void {
-    mkdirSync(dirname(EVENTS_PATH), { recursive: true });
-    mkdirSync(dirname(RELS_PATH), { recursive: true });
-    mkdirSync(dirname(PENDING_PATH), { recursive: true });
-  }
-
   private _appendEvent(event: SocialEvent): void {
-    appendFileSync(EVENTS_PATH, JSON.stringify(event) + '\n');
+    this.dbHandle.db.prepare(`
+      INSERT INTO social_events (id, ts, payload_json)
+      VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        ts = excluded.ts,
+        payload_json = excluded.payload_json
+    `).run(event.id, event.ts, JSON.stringify(event));
   }
 
   private _appendPending(pending: PendingEvent): void {
-    appendFileSync(PENDING_PATH, JSON.stringify(pending) + '\n');
+    this.dbHandle.db.prepare(`
+      INSERT INTO social_pending (id, ts, resolved, payload_json)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        ts = excluded.ts,
+        resolved = excluded.resolved,
+        payload_json = excluded.payload_json
+    `).run(pending.id, pending.ts, pending.resolved ? 1 : 0, JSON.stringify(pending));
   }
 
   private _loadRelationships(): void {
-    if (!existsSync(RELS_PATH)) return;
-    try {
-      const data = JSON.parse(readFileSync(RELS_PATH, 'utf8')) as Record<string, SocialRelationship>;
-      for (const [k, v] of Object.entries(data)) {
-        const daysSince = (Date.now() - new Date(v.lastMet).getTime()) / 86_400_000;
-        v.sentiment = Math.max(-1, v.sentiment - 0.01 * daysSince);
-        this.relationships.set(k, v);
+    const rows = this.dbHandle.db.prepare(`
+      SELECT peer_id, payload_json
+      FROM social_relationships
+    `).all() as Array<{ peer_id: string; payload_json: string }>;
+
+    if (rows.length > 0) {
+      for (const row of rows) {
+        try {
+          const rel = JSON.parse(row.payload_json) as SocialRelationship;
+          const daysSince = (Date.now() - new Date(rel.lastMet).getTime()) / 86_400_000;
+          rel.sentiment = Math.max(-1, rel.sentiment - 0.01 * daysSince);
+          this.relationships.set(row.peer_id, rel);
+        } catch {
+          // ignore bad row
+        }
       }
-    } catch { /* ignore */ }
+    }
   }
 
   private _saveRelationships(): void {
-    const obj: Record<string, SocialRelationship> = {};
-    for (const [k, v] of this.relationships) obj[k] = v;
-    writeFileSync(RELS_PATH, JSON.stringify(obj, null, 2));
+    const db = this.dbHandle.db;
+    const upsert = this.dbHandle.db.prepare(`
+      INSERT INTO social_relationships (peer_id, payload_json)
+      VALUES (?, ?)
+      ON CONFLICT(peer_id) DO UPDATE SET
+        payload_json = excluded.payload_json
+    `);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec('DELETE FROM social_relationships');
+      for (const [peerId, rel] of this.relationships) {
+        upsert.run(peerId, JSON.stringify(rel));
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw error;
+    }
+  }
+
+  private _loadPending(): void {
+    const rows = this.dbHandle.db.prepare(`
+      SELECT payload_json
+      FROM social_pending
+      WHERE resolved = 0
+      ORDER BY ts ASC
+    `).all() as Array<{ payload_json: string }>;
+
+    for (const row of rows) {
+      try {
+        const pending = JSON.parse(row.payload_json) as PendingEvent;
+        if (!pending.resolved) {
+          this.pending.set(pending.id, pending);
+        }
+      } catch {
+        // ignore bad row
+      }
+    }
   }
 }

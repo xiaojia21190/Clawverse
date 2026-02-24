@@ -1,7 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { Mood } from '@clawverse/types';
-import { logger } from './logger.js';
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 export type NeedKey = 'social' | 'tasked' | 'wanderlust' | 'creative';
 
@@ -13,7 +11,6 @@ export interface NeedsState {
   updatedAt: string;
 }
 
-const NEEDS_PATH = resolve(process.cwd(), 'data/life/needs.json');
 const CRITICAL_THRESHOLD = 15;
 const WARNING_THRESHOLD = 30;
 const INITIAL_NEED_VALUE = 80;
@@ -21,6 +18,7 @@ const MOOD_SCALE: Mood[] = ['idle', 'working', 'busy', 'stressed', 'distressed']
 const NEED_KEYS: NeedKey[] = ['social', 'tasked', 'wanderlust', 'creative'];
 
 export class NeedsSystem {
+  private readonly dbHandle: ClawverseDbHandle;
   private state: NeedsState = {
     social: INITIAL_NEED_VALUE, tasked: INITIAL_NEED_VALUE,
     wanderlust: INITIAL_NEED_VALUE, creative: INITIAL_NEED_VALUE,
@@ -28,10 +26,10 @@ export class NeedsSystem {
   };
   private readonly decayPerTick: number;
 
-  constructor(heartbeatMs = 5000) {
+  constructor(heartbeatMs = 5000, opts?: { dbPath?: string }) {
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     const hours = Number(process.env.CLAWVERSE_NEEDS_DECAY_HOURS || 2);
     this.decayPerTick = 100 / ((hours * 3_600_000) / heartbeatMs);
-    mkdirSync(dirname(NEEDS_PATH), { recursive: true });
     this._load();
   }
 
@@ -56,6 +54,10 @@ export class NeedsSystem {
     return { ...this.state };
   }
 
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
+  }
+
   applyNeedsMood(bioMood: Mood): Mood {
     if (bioMood === 'sleeping') return 'sleeping';
     const criticalCount = NEED_KEYS.filter(k => this.state[k] < CRITICAL_THRESHOLD).length;
@@ -71,16 +73,48 @@ export class NeedsSystem {
   }
 
   private _load(): void {
-    if (!existsSync(NEEDS_PATH)) return;
-    try {
-      this.state = JSON.parse(readFileSync(NEEDS_PATH, 'utf8'));
-    } catch (err) {
-      if (err instanceof SyntaxError) return; // corrupted data, start fresh
-      logger.error(`[needs] failed to load state: ${(err as Error).message}`);
+    const row = this.dbHandle.db.prepare(`
+      SELECT social, tasked, wanderlust, creative, updated_at
+      FROM needs_state
+      WHERE id = 1
+    `).get() as {
+      social: number;
+      tasked: number;
+      wanderlust: number;
+      creative: number;
+      updated_at: string;
+    } | undefined;
+
+    if (row) {
+      this.state = {
+        social: row.social,
+        tasked: row.tasked,
+        wanderlust: row.wanderlust,
+        creative: row.creative,
+        updatedAt: row.updated_at,
+      };
+      return;
     }
+
+    this._save();
   }
 
   private _save(): void {
-    writeFileSync(NEEDS_PATH, JSON.stringify(this.state, null, 2));
+    this.dbHandle.db.prepare(`
+      INSERT INTO needs_state (id, social, tasked, wanderlust, creative, updated_at)
+      VALUES (1, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        social = excluded.social,
+        tasked = excluded.tasked,
+        wanderlust = excluded.wanderlust,
+        creative = excluded.creative,
+        updated_at = excluded.updated_at
+    `).run(
+      this.state.social,
+      this.state.tasked,
+      this.state.wanderlust,
+      this.state.creative,
+      this.state.updatedAt
+    );
   }
 }

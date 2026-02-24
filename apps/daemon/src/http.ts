@@ -1,7 +1,4 @@
 import Fastify, { FastifyInstance, FastifyReply } from 'fastify';
-import { readFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { StateStore } from './state.js';
 import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
@@ -9,7 +6,7 @@ import { SocialSystem } from './social.js';
 import { CollabSystem } from './collab.js';
 import { NeedsSystem } from './needs.js';
 import { SkillsTracker } from './skills.js';
-import { EventEngine } from './events.js';
+import { EventEngine, LIFE_EVENT_TYPES, isLifeEventType } from './events.js';
 import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
@@ -142,53 +139,14 @@ export async function createHttpServer(
     episodesPath: context.episodeLogger?.getPath() ?? null,
   }));
 
-  // Evolution stats — aggregate from episodes JSONL
+  // Evolution stats
   fastify.get('/evolution/stats', async (_, reply) => {
     if (!context.episodeLogger) {
       reply.code(400);
       return { error: 'Evolution logger disabled' };
     }
-    const episodesPath = resolve(process.cwd(), context.episodeLogger.getPath());
-    if (!existsSync(episodesPath)) {
-      return { total: 0, successRate: 0, avgLatencyMs: 0, avgTokenTotal: 0, avgCostUsd: 0, byVariant: {} };
-    }
     try {
-      const raw = await readFile(episodesPath, 'utf8');
-      const lines = raw.trim().split('\n').filter(Boolean);
-      const records = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-
-      interface EpRecord { success: boolean; latencyMs: number; variant: string; tokenTotal?: number; costUsd?: number; }
-      const byVariant: Record<string, { total: number; successes: number; latencySum: number; tokenSum: number; costSum: number }> = {};
-
-      for (const r of records as EpRecord[]) {
-        const v = r.variant ?? 'unknown';
-        if (!byVariant[v]) byVariant[v] = { total: 0, successes: 0, latencySum: 0, tokenSum: 0, costSum: 0 };
-        const b = byVariant[v];
-        b.total += 1;
-        if (r.success) b.successes += 1;
-        b.latencySum += r.latencyMs ?? 0;
-        b.tokenSum += r.tokenTotal ?? 0;
-        b.costSum += r.costUsd ?? 0;
-      }
-
-      const total = records.length;
-      const successes = (records as EpRecord[]).filter((r) => r.success).length;
-      const latencySum = (records as EpRecord[]).reduce((s, r) => s + (r.latencyMs ?? 0), 0);
-
-      return {
-        total,
-        successRate: total > 0 ? Math.round((successes / total) * 10000) / 100 : 0,
-        avgLatencyMs: total > 0 ? Math.round(latencySum / total) : 0,
-        byVariant: Object.fromEntries(
-          Object.entries(byVariant).map(([v, b]) => [v, {
-            total: b.total,
-            successRate: Math.round((b.successes / b.total) * 10000) / 100,
-            avgLatencyMs: Math.round(b.latencySum / b.total),
-            avgTokenTotal: Math.round(b.tokenSum / b.total),
-            avgCostUsd: Math.round((b.costSum / b.total) * 1e6) / 1e6,
-          }])
-        ),
-      };
+      return context.episodeLogger.getStats();
     } catch (err) {
       reply.code(500);
       return { error: (err as Error).message };
@@ -294,8 +252,12 @@ export async function createHttpServer(
       reply.code(400);
       return { error: 'to, context, and question are required' };
     }
-    const task = context.collab.submitTask(body.to, body.context, body.question);
-    return { ok: true, taskId: task.id };
+    const submit = await context.collab.submitTask(body.to, body.context, body.question);
+    if (!submit.submitted) {
+      reply.code(502);
+      return { ok: false, taskId: submit.task.id, error: submit.error ?? 'submit failed' };
+    }
+    return { ok: true, taskId: submit.task.id };
   });
 
   // Collab: collab-worker polls for incoming tasks to execute
@@ -357,8 +319,16 @@ export async function createHttpServer(
   });
 
   fastify.post('/storyteller/trigger', async (request, reply) => {
-    const { eventType, payload } = request.body as { eventType: string; payload?: Record<string, unknown> };
-    context.events.emit(eventType as any, { ...payload, source: 'manual' });
+    const body = (request.body || {}) as { eventType?: string; payload?: Record<string, unknown> };
+    if (!body.eventType || !isLifeEventType(body.eventType)) {
+      return reply.code(400).send({
+        error: `invalid eventType. allowed: ${LIFE_EVENT_TYPES.join(', ')}`,
+      });
+    }
+    const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+      ? body.payload
+      : {};
+    context.events.emit(body.eventType, { ...payload, source: 'manual' });
     return { success: true };
   });
 

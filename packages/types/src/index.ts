@@ -101,7 +101,6 @@ export type NetworkEvent =
 export interface EvolutionRuntimeConfig {
   enabled: boolean;
   variant: string;
-  episodesPath: string;
   flushEvery: number;
   heartbeatSampleEvery: number;
 }
@@ -122,7 +121,6 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   evolution: {
     enabled: true,
     variant: 'baseline-v1',
-    episodesPath: 'data/evolution/episodes/episodes.jsonl',
     flushEvery: 1,
     heartbeatSampleEvery: 10,
   },

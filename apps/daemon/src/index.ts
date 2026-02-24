@@ -19,6 +19,7 @@ import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
+import { getDefaultSqlitePath } from './sqlite.js';
 
 const config = loadConfig();
 const securityConfig = loadSecurityConfig();
@@ -48,14 +49,16 @@ for (const warn of securityValidation.warnings) {
 logger.info(`Evolution Logging: ${config.evolution.enabled ? 'on' : 'off'} (${config.evolution.variant})`);
 const snapshotPath = process.env.CLAWVERSE_STATE_SNAPSHOT_PATH || 'data/state/latest.json';
 const snapshotEvery = Number(process.env.CLAWVERSE_STATE_SNAPSHOT_EVERY || 30);
-logger.info(`State Snapshot: ${snapshotPath} (every ${snapshotEvery}s)`);
+const sqlitePath = getDefaultSqlitePath();
+logger.info(`SQLite Path: ${sqlitePath}`);
+logger.info(`State Snapshot Key: ${snapshotPath} (every ${snapshotEvery}s)`);
 logger.info('');
 
 const episodeLogger = config.evolution.enabled
   ? new EvolutionEpisodeLogger({
-      episodesPath: config.evolution.episodesPath,
       variant: config.evolution.variant,
       flushEvery: config.evolution.flushEvery,
+      dbPath: sqlitePath,
     })
   : null;
 
@@ -66,9 +69,10 @@ if (episodeLogger) {
 
 let heartbeatTick = 0;
 let distressedTicks = 0;
+let heartbeatRunning = false;
 
 // Initialize State Store
-const stateStore = new StateStore();
+const stateStore = new StateStore({ dbPath: sqlitePath });
 stateStore.loadSnapshot(snapshotPath);
 
 // Initialize Bio-Monitor
@@ -92,7 +96,7 @@ stateStore.setMyId(myId);
 stateStore.updateMyStructure({ dna: myDna, name: myName });
 
 // Initialize Social System (pending queue mode, resolved by OpenClaw connector-skill)
-const social = new SocialSystem();
+const social = new SocialSystem({ dbPath: sqlitePath });
 social.init({
   myId,
   getPeers: () => stateStore.getAllPeers(),
@@ -100,7 +104,7 @@ social.init({
 });
 
 // Initialize Collab System
-const collab = new CollabSystem();
+const collab = new CollabSystem({ dbPath: sqlitePath });
 collab.init({
   onSubmit: async (task) => {
     const myState = stateStore.getMyState();
@@ -111,24 +115,27 @@ collab.init({
       context: task.context,
       question: task.question,
     });
-    await network.sendTo(task.from, msg).catch((err) => {
-      logger.warn(`[collab] Failed to send TaskRequest to ${task.from}: ${(err as Error).message}`);
-    });
+    const sent = await network.sendTo(task.from, msg);
+    if (!sent) {
+      logger.warn(`[collab] Failed to send TaskRequest to ${task.from}`);
+    }
+    return sent;
   },
   sendResult: async (toPeerId, taskId, result, success) => {
     const msg = createTaskResult({ taskId, success, result });
-    await network.sendTo(toPeerId, msg).catch((err) => {
-      logger.warn(`[collab] Failed to send TaskResult to ${toPeerId}: ${(err as Error).message}`);
-    });
+    const sent = await network.sendTo(toPeerId, msg);
+    if (!sent) {
+      logger.warn(`[collab] Failed to send TaskResult to ${toPeerId}`);
+    }
   },
 });
 
 // Initialize Life Systems
-const needs  = new NeedsSystem(config.heartbeatInterval);
-const skills = new SkillsTracker();
-const events = new EventEngine();
-const economy = new EconomySystem();
-const world = new WorldMap();
+const needs  = new NeedsSystem(config.heartbeatInterval, { dbPath: sqlitePath });
+const skills = new SkillsTracker({ dbPath: sqlitePath });
+const events = new EventEngine({ dbPath: sqlitePath });
+const economy = new EconomySystem({ dbPath: sqlitePath });
+const world = new WorldMap({ dbPath: sqlitePath });
 world.attachYjs(stateStore.getBuildingsMap());
 const storyteller = new Storyteller(events, stateStore, social, needs, economy);
 events.start();
@@ -276,89 +283,99 @@ network.on('message', (peerId, message) => {
   }
 });
 
-// Heartbeat broadcast loop
-setInterval(async () => {
+async function runHeartbeatCycle(): Promise<void> {
+  if (heartbeatRunning) return;
+  heartbeatRunning = true;
   const cycleStart = performance.now();
 
-  const metrics = bioMonitor.getMetrics();
-  needs.tick();
-  const bioMood = bioMonitor.getMood();
-  const mood    = needs.applyNeedsMood(bioMood);
-  economy.tick(mood, network.getPeers().length);
+  try {
+    const metrics = bioMonitor.getMetrics();
+    needs.tick();
+    const bioMood = bioMonitor.getMood();
+    const mood = needs.applyNeedsMood(bioMood);
+    economy.tick(mood, network.getPeers().length);
 
-  if (metrics) {
-    stateStore.updateMyVolatile({
-      mood,
-      cpuUsage: metrics.cpuUsage,
-      ramUsage: metrics.ramUsage,
-    });
-
-    const myState = stateStore.getMyState();
-
-    const heartbeat = createHeartbeat({
-      peerId: myId,
-      cpuUsage: metrics.cpuUsage,
-      ramUsage: metrics.ramUsage,
-      x: myState?.position.x ?? 0,
-      y: myState?.position.y ?? 0,
-      mood,
-    });
-
-    let success = true;
-    try {
-      await network.broadcast(heartbeat);
-    } catch (error) {
-      success = false;
-      logger.error('Heartbeat broadcast failed:', error);
-    }
-
-    const cycleMs = Math.round(performance.now() - cycleStart);
-    const peerCount = network.getPeerCount();
-    const knownPeers = stateStore.getPeerCount();
-
-    heartbeatTick += 1;
-    if (episodeLogger && heartbeatTick % Math.max(1, config.evolution.heartbeatSampleEvery) === 0) {
-      episodeLogger.record({
-        idPrefix: 'hb',
-        source: 'daemon-heartbeat',
-        success,
-        latencyMs: cycleMs,
-        meta: {
-          connectedPeers: peerCount,
-          knownPeers,
-          cpuUsage: metrics.cpuUsage,
-          ramUsage: metrics.ramUsage,
-          mood,
-        },
+    if (metrics) {
+      stateStore.updateMyVolatile({
+        mood,
+        cpuUsage: metrics.cpuUsage,
+        ramUsage: metrics.ramUsage,
       });
-    }
 
-    logger.info(
-      `Heartbeat (${peerCount} connected, ${knownPeers} known) | ${mood} | CPU: ${metrics.cpuUsage}% | cycle: ${cycleMs}ms`
-    );
+      const myState = stateStore.getMyState();
 
-    broadcastStateSse({ peers: stateStore.getAllPeers() });
+      const heartbeat = createHeartbeat({
+        peerId: myId,
+        cpuUsage: metrics.cpuUsage,
+        ramUsage: metrics.ramUsage,
+        x: myState?.position.x ?? 0,
+        y: myState?.position.y ?? 0,
+        mood,
+      });
 
-    // Emit need_critical events
-    for (const need of ['social', 'tasked', 'wanderlust', 'creative'] as NeedKey[]) {
-      if (needs.isCritical(need)) events.emit('need_critical', { need });
-    }
+      let success = true;
+      try {
+        await network.broadcast(heartbeat);
+      } catch (error) {
+        success = false;
+        logger.error('Heartbeat broadcast failed:', error);
+      }
 
-    // Track distressed ticks for mood_crisis
-    if (mood === 'distressed') {
-      distressedTicks++;
-      if (distressedTicks >= 3) {
-        events.emit('mood_crisis', { ticks: distressedTicks });
+      const cycleMs = Math.round(performance.now() - cycleStart);
+      const peerCount = network.getPeerCount();
+      const knownPeers = stateStore.getPeerCount();
+
+      heartbeatTick += 1;
+      if (episodeLogger && heartbeatTick % Math.max(1, config.evolution.heartbeatSampleEvery) === 0) {
+        episodeLogger.record({
+          idPrefix: 'hb',
+          source: 'daemon-heartbeat',
+          success,
+          latencyMs: cycleMs,
+          meta: {
+            connectedPeers: peerCount,
+            knownPeers,
+            cpuUsage: metrics.cpuUsage,
+            ramUsage: metrics.ramUsage,
+            mood,
+          },
+        });
+      }
+
+      logger.info(
+        `Heartbeat (${peerCount} connected, ${knownPeers} known) | ${mood} | CPU: ${metrics.cpuUsage}% | cycle: ${cycleMs}ms`
+      );
+
+      broadcastStateSse({ peers: stateStore.getAllPeers() });
+
+      // Emit need_critical events
+      for (const need of ['social', 'tasked', 'wanderlust', 'creative'] as NeedKey[]) {
+        if (needs.isCritical(need)) events.emit('need_critical', { need });
+      }
+
+      // Track distressed ticks for mood_crisis
+      if (mood === 'distressed') {
+        distressedTicks++;
+        if (distressedTicks >= 3) {
+          events.emit('mood_crisis', { ticks: distressedTicks });
+          distressedTicks = 0;
+        }
+      } else {
         distressedTicks = 0;
       }
-    } else {
-      distressedTicks = 0;
-    }
 
-    // Emit faction_forming if 3+ allies
-    const allyCount = social.getAllRelationships().filter(r => r.tier === 'ally').length;
-    if (allyCount >= 3) events.emit('faction_forming', { allyCount });
+      // Emit faction_forming if 3+ allies
+      const allyCount = social.getAllRelationships().filter(r => r.tier === 'ally').length;
+      if (allyCount >= 3) events.emit('faction_forming', { allyCount });
+    }
+  } finally {
+    heartbeatRunning = false;
   }
+}
+
+// Heartbeat broadcast loop
+const heartbeatInterval = setInterval(() => {
+  void runHeartbeatCycle();
 }, config.heartbeatInterval);
 
 logger.info('');
@@ -376,17 +393,32 @@ const snapshotInterval = setInterval(() => {
 }, Math.max(5, snapshotEvery) * 1000);
 
 // Graceful shutdown
+let shuttingDown = false;
 const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info('');
   logger.info('Shutting down...');
+  clearInterval(heartbeatInterval);
   clearInterval(snapshotInterval);
   try { stateStore.saveSnapshot(snapshotPath); } catch { /* ignore */ }
-  episodeLogger?.destroy();
   social.stop();
+  events.stop();
   storyteller.stop();
   await httpServer.close();
   bioMonitor.stop();
   await network.stop();
+  await Promise.allSettled([
+    stateStore.destroy(),
+    social.destroy(),
+    events.destroy(),
+    needs.destroy(),
+    skills.destroy(),
+    economy.destroy(),
+    world.destroy(),
+    collab.destroy(),
+    episodeLogger?.destroy(),
+  ]);
   process.exit(0);
 };
 

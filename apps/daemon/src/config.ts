@@ -14,7 +14,6 @@ export function loadConfig(): DaemonConfig {
         ? process.env.CLAWVERSE_EVOLUTION_ENABLED === 'true'
         : DEFAULT_CONFIG.evolution.enabled,
       variant: process.env.CLAWVERSE_EVOLUTION_VARIANT || DEFAULT_CONFIG.evolution.variant,
-      episodesPath: process.env.CLAWVERSE_EPISODES_PATH || DEFAULT_CONFIG.evolution.episodesPath,
       flushEvery: parseInt(
         process.env.CLAWVERSE_EPISODES_FLUSH_EVERY || String(DEFAULT_CONFIG.evolution.flushEvery),
         10

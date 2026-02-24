@@ -1,25 +1,42 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const root = process.cwd();
 const proposalsDir = join(root, 'data/evolution/proposals');
 const reportsDir = join(root, 'data/evolution/reports');
-const episodesPath = join(root, 'data/evolution/episodes/episodes.jsonl');
+const sqlitePath = join(root, process.env.CLAWVERSE_SQLITE_PATH || 'data/state/clawverse.db');
 
 function mean(arr) {
   if (!arr.length) return null;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function parseJsonl(path) {
-  const raw = readFileSync(path, 'utf8').trim();
-  if (!raw) return [];
-  return raw.split('\n').map((line) => JSON.parse(line));
+function readEpisodesFromSqlite(path) {
+  const db = new DatabaseSync(path);
+  try {
+    const rows = db.prepare(`
+      SELECT payload_json
+      FROM evolution_episodes
+      ORDER BY ts ASC
+    `).all();
+    return rows
+      .map((r) => {
+        try {
+          return JSON.parse(r.payload_json);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } finally {
+    db.close();
+  }
 }
 
 const latest = readFileSync(join(proposalsDir, 'LATEST'), 'utf8').trim();
 const proposal = JSON.parse(readFileSync(join(proposalsDir, latest), 'utf8'));
-const episodes = parseJsonl(episodesPath);
+const episodes = readEpisodesFromSqlite(sqlitePath);
 const includeSources = proposal?.evaluation?.includeSources || ['task-runtime', 'manual'];
 const filtered = episodes.filter((e) => includeSources.includes(e.source));
 

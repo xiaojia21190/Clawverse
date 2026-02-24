@@ -1,9 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { logger } from './logger.js';
-
-const TASKS_PATH = resolve(process.cwd(), 'data/collab/tasks.jsonl');
-const STATS_PATH = resolve(process.cwd(), 'data/collab/stats.json');
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 export interface CollabTask {
   id: string;
@@ -23,22 +19,28 @@ export interface CollabPeerStats {
   reputationDelta: number;
 }
 
+export interface CollabSubmitResult {
+  task: CollabTask;
+  submitted: boolean;
+  error?: string;
+}
+
 export class CollabSystem {
+  private readonly dbHandle: ClawverseDbHandle;
   private incoming: Map<string, CollabTask> = new Map();
   private outgoing: Map<string, CollabTask> = new Map();
   private stats: Map<string, CollabPeerStats> = new Map();
   private sendResult: ((toPeerId: string, taskId: string, result: string, success: boolean) => Promise<void>) | null = null;
-  private onSubmit: ((task: CollabTask) => Promise<void>) | null = null;
+  private onSubmit: ((task: CollabTask) => Promise<boolean>) | null = null;
 
-  constructor() {
-    mkdirSync(dirname(TASKS_PATH), { recursive: true });
-    mkdirSync(dirname(STATS_PATH), { recursive: true });
+  constructor(opts?: { dbPath?: string }) {
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     this._loadStats();
   }
 
   init(opts: {
     sendResult: (toPeerId: string, taskId: string, result: string, success: boolean) => Promise<void>;
-    onSubmit: (task: CollabTask) => Promise<void>;
+    onSubmit: (task: CollabTask) => Promise<boolean>;
   }): void {
     this.sendResult = opts.sendResult;
     this.onSubmit = opts.onSubmit;
@@ -64,11 +66,11 @@ export class CollabSystem {
     const s = this._getOrCreateStats(ct.from);
     s.tasksReceived += 1;
     this._saveStats();
-    appendFileSync(TASKS_PATH, JSON.stringify({ dir: 'in', ...ct }) + '\n');
+    this._appendTaskLog('in', ct);
     logger.info(`[collab] Task received from ${ct.fromName}: "${ct.question.slice(0, 60)}"`);
   }
 
-  submitTask(to: string, context: string, question: string): CollabTask {
+  async submitTask(to: string, context: string, question: string): Promise<CollabSubmitResult> {
     const id = `col-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
     const ct: CollabTask = {
       id,
@@ -80,12 +82,33 @@ export class CollabSystem {
       resolved: false,
     };
     this.outgoing.set(id, ct);
+
+    let submitted = false;
+    let error: string | undefined;
+
+    if (!this.onSubmit) {
+      error = 'submit_handler_not_initialized';
+    } else {
+      try {
+        submitted = await this.onSubmit(ct);
+        if (!submitted) error = 'send_to_peer_failed';
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (!submitted) {
+      this.outgoing.delete(id);
+      this._appendTaskLog('out-failed', ct, error);
+      logger.warn(`[collab] Task submit failed to ${to}: ${error ?? 'unknown'}`);
+      return { task: ct, submitted: false, error };
+    }
+
     const s = this._getOrCreateStats(to);
     s.tasksSent += 1;
     this._saveStats();
-    appendFileSync(TASKS_PATH, JSON.stringify({ dir: 'out', ...ct }) + '\n');
-    if (this.onSubmit) this.onSubmit(ct).catch(() => {});
-    return ct;
+    this._appendTaskLog('out', ct);
+    return { task: ct, submitted: true };
   }
 
   async resolve(id: string, result: string, success: boolean): Promise<boolean> {
@@ -127,6 +150,10 @@ export class CollabSystem {
     return Array.from(this.stats.values());
   }
 
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
+  }
+
   private _getOrCreateStats(peerId: string): CollabPeerStats {
     if (!this.stats.has(peerId)) {
       this.stats.set(peerId, {
@@ -141,16 +168,70 @@ export class CollabSystem {
   }
 
   private _loadStats(): void {
-    if (!existsSync(STATS_PATH)) return;
-    try {
-      const data = JSON.parse(readFileSync(STATS_PATH, 'utf8')) as Record<string, CollabPeerStats>;
-      for (const [k, v] of Object.entries(data)) this.stats.set(k, v);
-    } catch { /* ignore */ }
+    const rows = this.dbHandle.db.prepare(`
+      SELECT peer_id, tasks_received, tasks_sent, success_count, reputation_delta
+      FROM collab_stats
+    `).all() as Array<{
+      peer_id: string;
+      tasks_received: number;
+      tasks_sent: number;
+      success_count: number;
+      reputation_delta: number;
+    }>;
+
+    for (const row of rows) {
+      this.stats.set(row.peer_id, {
+        peerId: row.peer_id,
+        tasksReceived: row.tasks_received,
+        tasksSent: row.tasks_sent,
+        successCount: row.success_count,
+        reputationDelta: row.reputation_delta,
+      });
+    }
   }
 
   private _saveStats(): void {
-    const obj: Record<string, CollabPeerStats> = {};
-    for (const [k, v] of this.stats) obj[k] = v;
-    writeFileSync(STATS_PATH, JSON.stringify(obj, null, 2));
+    const db = this.dbHandle.db;
+    const upsert = this.dbHandle.db.prepare(`
+      INSERT INTO collab_stats (
+        peer_id, tasks_received, tasks_sent, success_count, reputation_delta
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(peer_id) DO UPDATE SET
+        tasks_received = excluded.tasks_received,
+        tasks_sent = excluded.tasks_sent,
+        success_count = excluded.success_count,
+        reputation_delta = excluded.reputation_delta
+    `);
+
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const stat of this.stats.values()) {
+        upsert.run(
+          stat.peerId,
+          stat.tasksReceived,
+          stat.tasksSent,
+          stat.successCount,
+          stat.reputationDelta
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw error;
+    }
+  }
+
+  private _appendTaskLog(dir: string, task: CollabTask, error?: string): void {
+    this.dbHandle.db.prepare(`
+      INSERT INTO collab_logs (ts, dir, task_id, peer_id, payload_json)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      new Date().toISOString(),
+      dir,
+      task.id,
+      task.from,
+      JSON.stringify({ ...task, error })
+    );
   }
 }

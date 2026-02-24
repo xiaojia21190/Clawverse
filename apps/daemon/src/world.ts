@@ -1,12 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import type * as Y from 'yjs';
 import type { Building, BuildingType, Position, TerrainType } from '@clawverse/types';
 import { logger } from './logger.js';
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 export type { Building };
 
-const MAP_PATH = resolve(process.cwd(), 'data/world/map.json');
 const GRID = 40;
 
 function initTerrain(): TerrainType[] {
@@ -69,12 +67,13 @@ function zoneName(pos: Position): string {
 }
 
 export class WorldMap {
+  private readonly dbHandle: ClawverseDbHandle;
   private terrain: TerrainType[] = initTerrain();
   private buildings: Map<string, Building> = new Map();
   private yjsBuildings: Y.Map<Building> | null = null;
 
-  constructor() {
-    mkdirSync(dirname(MAP_PATH), { recursive: true });
+  constructor(opts?: { dbPath?: string }) {
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     this._load();
   }
 
@@ -137,21 +136,47 @@ export class WorldMap {
 
   getBuildings(): Building[] { return Array.from(this.buildings.values()); }
 
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
+  }
+
   private _load(): void {
-    if (!existsSync(MAP_PATH)) return;
-    try {
-      const saved = JSON.parse(readFileSync(MAP_PATH, 'utf8')) as { buildings?: Building[] };
-      if (saved.buildings) {
-        for (const b of saved.buildings) this.buildings.set(b.id, b);
+    const rows = this.dbHandle.db.prepare(`
+      SELECT id, payload_json
+      FROM world_buildings
+    `).all() as Array<{ id: string; payload_json: string }>;
+
+    if (rows.length > 0) {
+      for (const row of rows) {
+        try {
+          const building = JSON.parse(row.payload_json) as Building;
+          this.buildings.set(row.id, building);
+        } catch {
+          // skip corrupted row
+        }
       }
-    } catch { /* use defaults */ }
+      return;
+    }
   }
 
   private _save(): void {
+    const db = this.dbHandle.db;
+    const upsert = this.dbHandle.db.prepare(`
+      INSERT INTO world_buildings (id, payload_json)
+      VALUES (?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        payload_json = excluded.payload_json
+    `);
+    db.exec('BEGIN IMMEDIATE');
     try {
-      writeFileSync(MAP_PATH, JSON.stringify({
-        buildings: Array.from(this.buildings.values()),
-      }, null, 2));
-    } catch { /* ignore */ }
+      db.exec('DELETE FROM world_buildings');
+      for (const building of this.buildings.values()) {
+        upsert.run(building.id, JSON.stringify(building));
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw error;
+    }
   }
 }

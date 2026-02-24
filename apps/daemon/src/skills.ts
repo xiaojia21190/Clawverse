@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { logger } from './logger.js';
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 export type SkillKey = 'social' | 'collab' | 'explorer' | 'analyst';
 
@@ -23,7 +21,6 @@ export interface LevelUpEvent {
   ts: string;
 }
 
-const SKILLS_PATH = resolve(process.cwd(), 'data/life/skills.json');
 const THRESHOLDS = [50, 150, 350, 700, 1200];
 
 function computeLevel(xp: number): number {
@@ -42,10 +39,11 @@ const EMPTY_STATE = (): SkillsState => ({
 });
 
 export class SkillsTracker {
+  private readonly dbHandle: ClawverseDbHandle;
   private state: SkillsState = EMPTY_STATE();
 
-  constructor() {
-    mkdirSync(dirname(SKILLS_PATH), { recursive: true });
+  constructor(opts?: { dbPath?: string }) {
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     this._load();
   }
 
@@ -67,17 +65,36 @@ export class SkillsTracker {
     return this.state[skill].level;
   }
 
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
+  }
+
   private _load(): void {
-    if (!existsSync(SKILLS_PATH)) return;
-    try {
-      this.state = JSON.parse(readFileSync(SKILLS_PATH, 'utf8'));
-    } catch (err) {
-      if (err instanceof SyntaxError) return;
-      logger.error(`[skills] failed to load state: ${(err as Error).message}`);
+    const row = this.dbHandle.db.prepare(`
+      SELECT payload_json
+      FROM skills_state
+      WHERE id = 1
+    `).get() as { payload_json: string } | undefined;
+
+    if (row?.payload_json) {
+      try {
+        this.state = JSON.parse(row.payload_json) as SkillsState;
+      } catch {
+        this.state = EMPTY_STATE();
+      }
+      return;
     }
+
+    this._save();
   }
 
   private _save(): void {
-    writeFileSync(SKILLS_PATH, JSON.stringify(this.state, null, 2));
+    this.dbHandle.db.prepare(`
+      INSERT INTO skills_state (id, payload_json, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `).run(JSON.stringify(this.state), this.state.updatedAt);
   }
 }

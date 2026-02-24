@@ -1,6 +1,4 @@
 import * as Y from 'yjs';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import {
   PeerState,
   Mood,
@@ -11,6 +9,7 @@ import {
   VolatileState,
 } from '@clawverse/types';
 import { logger } from './logger.js';
+import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 const DEFAULT_HARDWARE: HardwareMetrics = {
   cpuUsage: 0, ramUsage: 0, ramTotal: 0, diskFree: 0, uptime: 0,
@@ -35,13 +34,15 @@ interface StructuralState {
 }
 
 export class StateStore {
+  private readonly dbHandle: ClawverseDbHandle;
   private doc: Y.Doc;
   private structural: Y.Map<StructuralState>;
   private volatile: Map<string, VolatileState> = new Map();
   private myId: string = '';
   private updateCallbacks: Array<(update: Uint8Array) => void> = [];
 
-  constructor() {
+  constructor(opts?: { dbPath?: string }) {
+    this.dbHandle = openClawverseDb(opts?.dbPath);
     this.doc = new Y.Doc();
     this.structural = this.doc.getMap('peers');
 
@@ -192,25 +193,33 @@ export class StateStore {
     this.updateCallbacks.push(callback);
   }
 
+  async destroy(): Promise<void> {
+    this.dbHandle.close();
+  }
+
   saveSnapshot(path: string): void {
     const update = this.getStateUpdate();
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({
-      savedAt: new Date().toISOString(),
-      updateBase64: Buffer.from(update).toString('base64'),
-    }, null, 2));
+    this.dbHandle.db.prepare(`
+      INSERT INTO state_snapshots (snapshot_key, saved_at, update_base64)
+      VALUES (?, ?, ?)
+      ON CONFLICT(snapshot_key) DO UPDATE SET
+        saved_at = excluded.saved_at,
+        update_base64 = excluded.update_base64
+    `).run(path, new Date().toISOString(), Buffer.from(update).toString('base64'));
   }
 
   loadSnapshot(path: string): boolean {
-    try {
-      const raw = readFileSync(path, 'utf8');
-      const data = JSON.parse(raw) as { updateBase64?: string };
-      if (!data.updateBase64) return false;
-      this.applyUpdate(new Uint8Array(Buffer.from(data.updateBase64, 'base64')));
-      logger.info(`State snapshot loaded: ${path}`);
+    const row = this.dbHandle.db.prepare(`
+      SELECT update_base64
+      FROM state_snapshots
+      WHERE snapshot_key = ?
+    `).get(path) as { update_base64?: string } | undefined;
+
+    if (row?.update_base64) {
+      this.applyUpdate(new Uint8Array(Buffer.from(row.update_base64, 'base64')));
+      logger.info(`State snapshot loaded from sqlite: ${path}`);
       return true;
-    } catch {
-      return false;
     }
+    return false;
   }
 }
