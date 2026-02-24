@@ -13,6 +13,10 @@ export default defineConfig({
       '/move': { target: 'http://127.0.0.1:19820', changeOrigin: true },
       '/evolution': { target: 'http://127.0.0.1:19820', changeOrigin: true },
       '/dna': { target: 'http://127.0.0.1:19820', changeOrigin: true },
+      '/economy': { target: 'http://127.0.0.1:19820', changeOrigin: true },
+      '/world': { target: 'http://127.0.0.1:19820', changeOrigin: true },
+      '/storyteller': { target: 'http://127.0.0.1:19820', changeOrigin: true },
+      '/life': { target: 'http://127.0.0.1:19820', changeOrigin: true },
     },
   },
 });
