@@ -18,6 +18,7 @@ import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
+import { Storyteller } from './storyteller.js';
 
 const config = loadConfig();
 const securityConfig = loadSecurityConfig();
@@ -129,7 +130,9 @@ const events = new EventEngine();
 const economy = new EconomySystem();
 const world = new WorldMap();
 world.attachYjs(stateStore.getBuildingsMap());
+const storyteller = new Storyteller(events, stateStore, social, needs, economy);
 events.start();
+storyteller.start();
 
 // Broadcast latest DNA announce to all connected peers
 async function rebroadcastAnnounce(): Promise<void> {
@@ -177,6 +180,7 @@ const httpServer = await createHttpServer(config.port, {
   events,
   economy,
   world,
+  storyteller,
   onSoulUpdate,
 });
 
@@ -379,6 +383,7 @@ const shutdown = async () => {
   try { stateStore.saveSnapshot(snapshotPath); } catch { /* ignore */ }
   episodeLogger?.destroy();
   social.stop();
+  storyteller.stop();
   await httpServer.close();
   bioMonitor.stop();
   await network.stop();

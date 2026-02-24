@@ -12,6 +12,7 @@ import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
+import { Storyteller } from './storyteller.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
@@ -29,6 +30,7 @@ interface APIContext {
   events: EventEngine;
   economy: EconomySystem;
   world: WorldMap;
+  storyteller: Storyteller;
   // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
 }
@@ -339,6 +341,26 @@ export async function createHttpServer(
     }
   );
   fastify.get('/life/relationships', async () => context.social.getAllRelationships());
+
+  fastify.get('/storyteller/status', async () => ({
+    mode: context.storyteller.getMode(),
+    tension: context.storyteller.getTension(),
+  }));
+
+  fastify.post('/storyteller/mode', async (request, reply) => {
+    const { mode } = request.body as { mode: string };
+    if (!['Randy', 'Cassandra', 'Phoebe'].includes(mode)) {
+      return reply.code(400).send({ error: 'invalid mode' });
+    }
+    context.storyteller.setMode(mode as any);
+    return { success: true, mode };
+  });
+
+  fastify.post('/storyteller/trigger', async (request, reply) => {
+    const { eventType, payload } = request.body as { eventType: string; payload?: Record<string, unknown> };
+    context.events.emit(eventType as any, { ...payload, source: 'manual' });
+    return { success: true };
+  });
 
   fastify.get('/world/map', async () => context.world.getMap());
 
