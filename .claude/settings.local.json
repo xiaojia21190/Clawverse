@@ -2,26 +2,46 @@
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "bash tools/social/start-worker.sh",
-        "description": "[social-worker] auto-start on session begin"
-      },
-      {
-        "type": "command",
-        "command": "bash tools/life/start-life-worker.sh",
-        "description": "[life-worker] auto-start on session begin"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash tools/social/start-worker.sh",
+            "description": "[social-worker] auto-start on session begin"
+          },
+          {
+            "type": "command",
+            "command": "bash tools/life/start-life-worker.sh",
+            "description": "[life-worker] auto-start on session begin"
+          },
+          {
+            "type": "command",
+            "command": "bash tools/storyteller/start-worker.sh",
+            "description": "[storyteller-worker] auto-start on session begin"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "type": "command",
-        "command": "bash tools/social/stop-worker.sh",
-        "description": "[social-worker] auto-stop on session end"
-      },
-      {
-        "type": "command",
-        "command": "bash tools/life/stop-life-worker.sh",
-        "description": "[life-worker] auto-stop on session end"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash tools/social/stop-worker.sh",
+            "description": "[social-worker] auto-stop on session end"
+          },
+          {
+            "type": "command",
+            "command": "bash tools/life/stop-life-worker.sh",
+            "description": "[life-worker] auto-stop on session end"
+          },
+          {
+            "type": "command",
+            "command": "bash tools/storyteller/stop-worker.sh",
+            "description": "[storyteller-worker] auto-stop on session end"
+          }
+        ]
       }
     ]
   },
@@ -57,7 +77,8 @@
       "Bash(which git || /mingw64/bin/git --version || /usr/bin/git --version || cmd.exe /c \"git --version\" 2>&1)",
       "Bash(cmd.exe:*)",
       "Bash(\"/d/Program Files/Git/cmd/git.exe\":*)",
-      "Bash(chmod +x:*)"
+      "Bash(chmod +x:*)",
+      "Bash(export PATH=\"$PATH:/d/Program Files/Git/bin\" && cd /d/code/Clawverse && pnpm --filter @clawverse/daemon build 2>&1)"
     ]
   }
 }

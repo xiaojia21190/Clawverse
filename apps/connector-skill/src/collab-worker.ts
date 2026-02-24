@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { createTaskRunner } from './index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +21,8 @@ const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_COLLAB_POLL_MS || 60_000);
 const CLAUDE_MODEL = process.env.CLAWVERSE_COLLAB_MODEL || 'claude-haiku-4-5';
 const COLLAB_LOG = resolve(process.cwd(), 'data/collab/worker.log');
+
+const runner = createTaskRunner({ source: 'task-runtime' });
 
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -33,17 +36,6 @@ interface CollabTask {
   fromName: string;
   context: string;
   question: string;
-}
-
-async function reportEpisode(success: boolean, latencyMs: number): Promise<void> {
-  try {
-    await fetch(`${DAEMON_URL}/evolution/episode`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success, latencyMs, source: 'task-runtime', variant: 'collab-execution' }),
-      signal: AbortSignal.timeout(3_000),
-    });
-  } catch { /* non-critical */ }
 }
 
 async function poll(): Promise<void> {
@@ -76,21 +68,22 @@ async function poll(): Promise<void> {
 
     let result = '';
     let success = false;
-    const t0 = Date.now();
 
     try {
-      const { stdout } = await execFileAsync(
-        'claude',
-        ['--print', '--model', CLAUDE_MODEL, '-p', prompt],
-        { timeout: 60_000 },
-      );
-      result = stdout.trim();
-      success = result.length > 0;
+      result = await runner.run('collab-execution', async () => {
+        const { stdout } = await execFileAsync(
+          'claude',
+          ['--print', '--model', CLAUDE_MODEL, '-p', prompt],
+          { timeout: 60_000 },
+        );
+        const text = stdout.trim();
+        if (!text) throw new Error('Empty LLM response');
+        return text;
+      });
+      success = true;
     } catch (err) {
       log(`  claude --print failed: ${(err as Error).message}`);
     }
-
-    const latencyMs = Date.now() - t0;
 
     try {
       const res = await fetch(`${DAEMON_URL}/collab/resolve`, {
@@ -100,17 +93,13 @@ async function poll(): Promise<void> {
         signal: AbortSignal.timeout(5_000),
       });
       if (res.ok) {
-        log(`  Resolved (${latencyMs}ms): "${result.slice(0, 80)}"`);
+        log(`  Resolved: "${result.slice(0, 80)}"`);
       } else {
         log(`  Resolve rejected: ${res.status}`);
-        success = false;
       }
     } catch (err) {
       log(`  Resolve error: ${(err as Error).message}`);
-      success = false;
     }
-
-    reportEpisode(success, latencyMs).catch(() => {});
   }
 }
 

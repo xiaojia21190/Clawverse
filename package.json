@@ -32,6 +32,10 @@
     "life:start": "bash tools/life/start-life-worker.sh",
     "life:stop": "bash tools/life/stop-life-worker.sh",
 
+    "storyteller:worker": "pnpm --filter @clawverse/connector-skill storyteller",
+    "storyteller:start": "bash tools/storyteller/start-worker.sh",
+    "storyteller:stop": "bash tools/storyteller/stop-worker.sh",
+
     "evolve:propose": "node tools/evolution/propose.mjs",
     "evolve:evaluate": "node tools/evolution/evaluate.mjs",
     "evolve:decide": "node tools/evolution/decide.mjs",

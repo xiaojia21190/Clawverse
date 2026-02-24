@@ -22,6 +22,7 @@ import {
   appendFileSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { createTaskRunner } from './index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +40,8 @@ const TG_BOT_TOKEN = process.env.CLAWVERSE_TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.CLAWVERSE_TELEGRAM_CHAT_ID || '';
 // Only notify for first-meet events
 const NOTIFY_TRIGGERS = new Set(['new-peer']);
+
+const runner = createTaskRunner({ source: 'task-runtime' });
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -222,17 +225,6 @@ async function resolveEvent(id: string, dialogue: string): Promise<boolean> {
   }
 }
 
-async function reportEpisode(success: boolean, latencyMs: number): Promise<void> {
-  try {
-    await fetch(`${DAEMON_URL}/evolution/episode`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success, latencyMs, source: 'task-runtime', variant: 'social-dialogue' }),
-      signal: AbortSignal.timeout(3_000),
-    });
-  } catch { /* non-critical */ }
-}
-
 // ─── Main poll loop ───────────────────────────────────────────────────────────
 
 async function poll(): Promise<void> {
@@ -244,16 +236,19 @@ async function poll(): Promise<void> {
   for (const event of pending) {
     log(`  [${event.trigger}] ${event.fromName} → ${event.toName}`);
 
-    const t0 = Date.now();
-    const dialogue = await generateDialogue(event);
-    const ok = await resolveEvent(event.id, dialogue);
-    reportEpisode(ok, Date.now() - t0).catch(() => {});
+    const dialogue = await runner.run('social-dialogue', async () => {
+      const text = await generateDialogue(event);
+      const ok = await resolveEvent(event.id, text);
+      if (!ok) throw new Error(`Failed to resolve event ${event.id}`);
+      return text;
+    }).catch((err: Error) => {
+      log(`  Failed: ${err.message}`);
+      return null;
+    });
 
-    if (ok) {
+    if (dialogue) {
       log(`  Resolved: "${dialogue.slice(0, 80)}"`);
       await sendTelegram(event, dialogue);
-    } else {
-      log(`  Failed to resolve event ${event.id}`);
     }
   }
 }

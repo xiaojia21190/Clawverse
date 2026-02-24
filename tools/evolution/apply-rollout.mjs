@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
@@ -27,6 +27,8 @@ const policy = config.rolloutPolicy || {
   stepDownOnFail: 0.1,
 };
 
+const prevRatio = state.candidateRatio;
+
 if (decision.decision === 'adopt_candidate') {
   if (state.candidate !== config.candidate || state.baseline !== config.baseline) {
     state.baseline = config.baseline;
@@ -44,6 +46,20 @@ if (decision.decision === 'adopt_candidate') {
 
 state.updatedAt = new Date().toISOString();
 writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+// Append to rollout history
+appendFileSync(
+  join(root, 'data/evolution/rollout/history.jsonl'),
+  JSON.stringify({
+    ts: state.updatedAt,
+    decision: decision.decision,
+    proposalId: decision.proposalId,
+    baseline: state.baseline,
+    candidate: state.candidate,
+    prevRatio,
+    ratio: state.candidateRatio,
+  }) + '\n',
+);
 
 const envPayload = {
   baseline: state.baseline,

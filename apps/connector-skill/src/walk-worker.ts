@@ -16,6 +16,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { createTaskRunner } from './index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,22 +26,13 @@ const CLAUDE_MODEL = process.env.CLAWVERSE_WALK_MODEL || 'claude-haiku-4-5';
 const WALK_LOG = resolve(process.cwd(), 'data/social/walk.log');
 const GRID_SIZE = 40;
 
+const runner = createTaskRunner({ source: 'task-runtime' });
+
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
   mkdirSync(dirname(WALK_LOG), { recursive: true });
   appendFileSync(WALK_LOG, line + '\n');
-}
-
-async function reportEpisode(success: boolean, latencyMs: number): Promise<void> {
-  try {
-    await fetch(`${DAEMON_URL}/evolution/episode`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success, latencyMs, source: 'task-runtime', variant: 'walk-decision' }),
-      signal: AbortSignal.timeout(3_000),
-    });
-  } catch { /* non-critical */ }
 }
 
 interface Position { x: number; y: number }
@@ -125,40 +117,26 @@ async function walk(): Promise<void> {
 
   const prompt = buildPrompt(me, peersData.all ?? []);
 
-  let newPos: Position | null = null;
-  let latencyMs = 0;
-  try {
-    const t0 = Date.now();
+  await runner.run('walk-decision', async () => {
     const { stdout } = await execFileAsync(
       'claude',
       ['--print', '--model', CLAUDE_MODEL, '-p', prompt],
       { timeout: 30_000 }
     );
-    latencyMs = Date.now() - t0;
-    newPos = parsePosition(stdout);
-  } catch (err) {
-    log(`claude --print failed: ${(err as Error).message}`);
-    return;
-  }
+    const newPos = parsePosition(stdout);
+    if (!newPos) throw new Error('Could not parse position from claude output');
 
-  if (!newPos) { log('Could not parse position from claude output'); return; }
-
-  try {
     const res = await fetch(`${DAEMON_URL}/move`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(newPos),
       signal: AbortSignal.timeout(5_000),
     });
-    if (res.ok) {
-      log(`Moved to (${newPos.x}, ${newPos.y}) — ${locationName(newPos)}`);
-    } else {
-      log(`Move rejected: ${res.status}`);
-    }
-    reportEpisode(res.ok, latencyMs).catch(() => {});
-  } catch (err) {
-    log(`Move error: ${(err as Error).message}`);
-  }
+    if (!res.ok) throw new Error(`Move rejected: ${res.status}`);
+
+    log(`Moved to (${newPos.x}, ${newPos.y}) — ${locationName(newPos)}`);
+    return newPos;
+  }).catch((err: Error) => log(`Walk failed: ${err.message}`));
 }
 
 log('Clawverse Walk Worker started');

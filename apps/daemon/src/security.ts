@@ -52,6 +52,16 @@ export function loadSecurityConfig(): SecurityConfig {
   }
 }
 
+const WEAK_SECRET_EXAMPLES = new Set([
+  'replace-with-long-random-secret',
+  'secret',
+  'changeme',
+  'password',
+  'clawverse',
+]);
+
+const PEER_ID_RE = /^[0-9a-f]{16}$/i;
+
 export function validateSecurityConfig(config: SecurityConfig): SecurityValidation {
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -60,8 +70,26 @@ export function validateSecurityConfig(config: SecurityConfig): SecurityValidati
     errors.push('Signed ingress requested but sharedSecret is missing.');
   }
 
+  if (config.sharedSecret) {
+    if (config.sharedSecret.length < 32) {
+      errors.push(
+        `sharedSecret is too short (${config.sharedSecret.length} chars); minimum is 32.`,
+      );
+    }
+    if (WEAK_SECRET_EXAMPLES.has(config.sharedSecret.toLowerCase())) {
+      errors.push('sharedSecret is a known example/default value; replace it with a random key.');
+    }
+  }
+
   if (!config.allowedPeers?.length) {
     warnings.push('Peer allowlist is empty (open peer discovery).');
+  } else {
+    const invalid = config.allowedPeers.filter((id) => !PEER_ID_RE.test(id));
+    if (invalid.length) {
+      errors.push(
+        `allowedPeers contains invalid peer ID(s) (expected 16 hex chars): ${invalid.join(', ')}`,
+      );
+    }
   }
 
   if (!config.sharedSecret) {

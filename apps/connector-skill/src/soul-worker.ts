@@ -18,11 +18,14 @@ import { promisify } from 'node:util';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
+import { createTaskRunner } from './index.js';
 
 const execFileAsync = promisify(execFile);
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const CLAUDE_DIR = join(homedir(), '.claude');
+
+const runner = createTaskRunner({ source: 'task-runtime' });
 
 function sha256hex(input: string): string {
   return crypto.createHash('sha256').update(input).digest('hex');
@@ -65,19 +68,7 @@ function buildBadges(soulContent: string, skills: string[]): string[] {
   return badges;
 }
 
-async function reportEpisode(success: boolean, latencyMs: number): Promise<void> {
-  try {
-    await fetch(`${DAEMON_URL}/evolution/episode`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ success, latencyMs, source: 'task-runtime', variant: 'soul-enrichment' }),
-      signal: AbortSignal.timeout(3_000),
-    });
-  } catch { /* non-critical */ }
-}
-
 async function run(): Promise<void> {
-  const t0 = Date.now();
   console.log('[soul-worker] Starting soul enrichment...');
 
   const soulContent = readSoulMd();
@@ -98,7 +89,7 @@ async function run(): Promise<void> {
   console.log(`[soul-worker] soulHash: ${soulHash.slice(0, 16)}...`);
   console.log(`[soul-worker] badges: [${badges.join(', ')}]`);
 
-  try {
+  await runner.run('soul-enrichment', async () => {
     const res = await fetch(`${DAEMON_URL}/dna/soul`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -108,20 +99,17 @@ async function run(): Promise<void> {
 
     if (!res.ok) {
       const err = await res.text();
-      console.error(`[soul-worker] Daemon rejected soul update: ${err}`);
-      await reportEpisode(false, Date.now() - t0);
-      process.exit(1);
+      throw new Error(`Daemon rejected soul update: ${err}`);
     }
 
     const result = await res.json() as any;
     console.log(`[soul-worker] DNA enriched: ${result.dna?.id ?? 'unknown'} (${result.dna?.archetype})`);
     console.log('[soul-worker] Done.');
-    await reportEpisode(true, Date.now() - t0);
-  } catch (err) {
-    console.error(`[soul-worker] Failed to reach daemon: ${(err as Error).message}`);
-    await reportEpisode(false, Date.now() - t0);
-    process.exit(1);
-  }
+    return result;
+  });
 }
 
-run();
+run().catch((err) => {
+  console.error(`[soul-worker] Fatal: ${(err as Error).message}`);
+  process.exit(1);
+});

@@ -18,3 +18,4 @@ data/evolution/rollout/latest.env
 data/evolution/summaries/*.md
 data/state/latest.json
 data/security/network.json
+.ace-tool/

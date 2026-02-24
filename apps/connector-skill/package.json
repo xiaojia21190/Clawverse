@@ -13,6 +13,7 @@
     "walk": "tsx src/walk-worker.ts",
     "collab": "tsx src/collab-worker.ts",
     "life": "tsx src/life-worker.ts",
+    "storyteller": "tsx src/storyteller-worker.ts",
     "clean": "rm -rf dist"
   },
   "devDependencies": {
