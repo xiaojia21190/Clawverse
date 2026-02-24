@@ -1,19 +1,19 @@
-import { mkdirSync, appendFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve } from 'node:path';
 import { createTaskRunner } from './index.js';
 import { llmGenerate, llmProviderInfo } from './llm.js';
+import { FileWriteQueue } from './io-queue.js';
 
 const DAEMON_URL    = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL = Number(process.env.CLAWVERSE_LIFE_POLL_MS || 90_000);
 const LIFE_LOG      = resolve(process.cwd(), 'data/life/worker.log');
 
 const runner = createTaskRunner({ source: 'task-runtime' });
+const io = new FileWriteQueue({ appendFlushMs: 200 });
 
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  mkdirSync(dirname(LIFE_LOG), { recursive: true });
-  appendFileSync(LIFE_LOG, line + '\n');
+  io.appendLine(LIFE_LOG, `${line}\n`);
 }
 
 interface LifeEvent {
@@ -155,16 +155,48 @@ async function poll(): Promise<void> {
   }
 }
 
+let pollRunning = false;
+
+async function runPollCycle(): Promise<void> {
+  if (pollRunning) return;
+  pollRunning = true;
+  try {
+    await poll();
+  } finally {
+    pollRunning = false;
+  }
+}
+
 const providerInfo = llmProviderInfo();
 log('Clawverse Life Worker started');
 log(`  Daemon: ${DAEMON_URL}`);
 log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
 log(`  Poll interval: ${POLL_INTERVAL}ms`);
 
-poll().catch(err => log(`Poll error: ${(err as Error).message}`));
+runPollCycle().catch(err => log(`Poll error: ${(err as Error).message}`));
 const timer = setInterval(() => {
-  poll().catch(err => log(`Poll error: ${(err as Error).message}`));
+  runPollCycle().catch(err => log(`Poll error: ${(err as Error).message}`));
 }, POLL_INTERVAL);
+timer.unref();
 
-process.on('SIGINT',  () => { clearInterval(timer); log('Life worker stopped.'); process.exit(0); });
-process.on('SIGTERM', () => { clearInterval(timer); log('Life worker stopped.'); process.exit(0); });
+let shuttingDown = false;
+
+async function waitForPollIdle(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (pollRunning && Date.now() < deadline) {
+    await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, 50));
+  }
+}
+
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(timer);
+  await waitForPollIdle();
+  log('Life worker stopped.');
+  await io.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });

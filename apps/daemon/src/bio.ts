@@ -38,6 +38,7 @@ export class BioMonitor {
   private metrics: HardwareMetrics | null = null;
   private intervalId: NodeJS.Timeout | null = null;
   private updateInterval: number;
+  private refreshRunning = false;
 
   constructor(updateInterval: number = 5000) {
     this.updateInterval = updateInterval;
@@ -53,13 +54,8 @@ export class BioMonitor {
     logger.info(`RAM: ${this.metrics.ramTotal}GB, Disk Free: ${this.metrics.diskFree}GB`);
 
     // Periodic updates
-    this.intervalId = setInterval(async () => {
-      try {
-        this.metrics = await getHardwareMetrics();
-        logger.debug(`CPU: ${this.metrics.cpuUsage}%, RAM: ${this.metrics.ramUsage}%`);
-      } catch (err) {
-        logger.error('Failed to read hardware metrics:', err);
-      }
+    this.intervalId = setInterval(() => {
+      void this._refreshMetrics();
     }, this.updateInterval);
   }
 
@@ -78,5 +74,18 @@ export class BioMonitor {
   getMood(): Mood {
     if (!this.metrics) return 'sleeping';
     return getMoodFromCpu(this.metrics.cpuUsage);
+  }
+
+  private async _refreshMetrics(): Promise<void> {
+    if (this.refreshRunning) return;
+    this.refreshRunning = true;
+    try {
+      this.metrics = await getHardwareMetrics();
+      logger.debug(`CPU: ${this.metrics.cpuUsage}%, RAM: ${this.metrics.ramUsage}%`);
+    } catch (err) {
+      logger.error('Failed to read hardware metrics:', err);
+    } finally {
+      this.refreshRunning = false;
+    }
   }
 }

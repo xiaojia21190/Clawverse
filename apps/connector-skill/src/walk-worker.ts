@@ -10,10 +10,10 @@
  *   5. POST /move to daemon
  */
 
-import { mkdirSync, appendFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve } from 'node:path';
 import { createTaskRunner } from './index.js';
 import { llmGenerate, llmProviderInfo } from './llm.js';
+import { FileWriteQueue } from './io-queue.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const WALK_INTERVAL_MS = Number(process.env.CLAWVERSE_WALK_INTERVAL_MS || 5 * 60_000);
@@ -21,12 +21,12 @@ const WALK_LOG = resolve(process.cwd(), 'data/social/walk.log');
 const GRID_SIZE = 40;
 
 const runner = createTaskRunner({ source: 'task-runtime' });
+const io = new FileWriteQueue({ appendFlushMs: 200 });
 
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  mkdirSync(dirname(WALK_LOG), { recursive: true });
-  appendFileSync(WALK_LOG, line + '\n');
+  io.appendLine(WALK_LOG, `${line}\n`);
 }
 
 interface Position { x: number; y: number }
@@ -129,16 +129,48 @@ async function walk(): Promise<void> {
   }).catch((err: Error) => log(`Walk failed: ${err.message}`));
 }
 
+let walkRunning = false;
+
+async function runWalkCycle(): Promise<void> {
+  if (walkRunning) return;
+  walkRunning = true;
+  try {
+    await walk();
+  } finally {
+    walkRunning = false;
+  }
+}
+
 const providerInfo = llmProviderInfo();
 log('Clawverse Walk Worker started');
 log(`  Daemon: ${DAEMON_URL}`);
 log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
 log(`  Walk interval: ${WALK_INTERVAL_MS}ms`);
 
-walk().catch((err) => log(`Walk error: ${(err as Error).message}`));
+runWalkCycle().catch((err) => log(`Walk error: ${(err as Error).message}`));
 const timer = setInterval(() => {
-  walk().catch((err) => log(`Walk error: ${(err as Error).message}`));
+  runWalkCycle().catch((err) => log(`Walk error: ${(err as Error).message}`));
 }, WALK_INTERVAL_MS);
+timer.unref();
 
-process.on('SIGINT', () => { clearInterval(timer); log('Walk worker stopped.'); process.exit(0); });
-process.on('SIGTERM', () => { clearInterval(timer); log('Walk worker stopped.'); process.exit(0); });
+let shuttingDown = false;
+
+async function waitForWalkIdle(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (walkRunning && Date.now() < deadline) {
+    await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, 50));
+  }
+}
+
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(timer);
+  await waitForWalkIdle();
+  log('Walk worker stopped.');
+  await io.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });

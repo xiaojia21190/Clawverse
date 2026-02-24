@@ -34,7 +34,7 @@ export function useStoryteller() {
     await fetch('/storyteller/trigger', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ eventType, ...payload }),
+      body: JSON.stringify({ eventType, payload }),
     });
   }
 

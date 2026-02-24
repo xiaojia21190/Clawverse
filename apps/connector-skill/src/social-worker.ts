@@ -14,14 +14,12 @@
 
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  writeFileSync,
-  appendFileSync,
 } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve } from 'node:path';
 import { createTaskRunner } from './index.js';
 import { llmGenerate, llmProviderInfo } from './llm.js';
+import { FileWriteQueue } from './io-queue.js';
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -37,6 +35,8 @@ const TG_CHAT_ID = process.env.CLAWVERSE_TELEGRAM_CHAT_ID || '';
 const NOTIFY_TRIGGERS = new Set(['new-peer']);
 
 const runner = createTaskRunner({ source: 'task-runtime' });
+const io = new FileWriteQueue({ appendFlushMs: 200, stateDebounceMs: 50 });
+const memoryCache = new Map<string, PeerMemory>();
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -72,23 +72,42 @@ function memoryPath(peerId: string): string {
 }
 
 function loadMemory(peerId: string): PeerMemory {
+  const cached = memoryCache.get(peerId);
+  if (cached) {
+    return {
+      peerId: cached.peerId,
+      recentDialogues: [...cached.recentDialogues],
+      lastUpdated: cached.lastUpdated,
+    };
+  }
+
   const path = memoryPath(peerId);
+  const empty: PeerMemory = { peerId, recentDialogues: [], lastUpdated: new Date().toISOString() };
   if (!existsSync(path)) {
-    return { peerId, recentDialogues: [], lastUpdated: new Date().toISOString() };
+    memoryCache.set(peerId, empty);
+    return { ...empty, recentDialogues: [] };
   }
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as PeerMemory;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as PeerMemory;
+    const normalized: PeerMemory = {
+      peerId,
+      recentDialogues: Array.isArray(parsed.recentDialogues) ? parsed.recentDialogues : [],
+      lastUpdated: parsed.lastUpdated || new Date().toISOString(),
+    };
+    memoryCache.set(peerId, normalized);
+    return { ...normalized, recentDialogues: [...normalized.recentDialogues] };
   } catch {
-    return { peerId, recentDialogues: [], lastUpdated: new Date().toISOString() };
+    memoryCache.set(peerId, empty);
+    return { ...empty, recentDialogues: [] };
   }
 }
 
 function saveMemory(peerId: string, dialogue: string): void {
-  mkdirSync(MEMORIES_DIR, { recursive: true });
   const mem = loadMemory(peerId);
   mem.recentDialogues = [dialogue, ...mem.recentDialogues].slice(0, MAX_MEMORY_SNIPPETS);
   mem.lastUpdated = new Date().toISOString();
-  writeFileSync(memoryPath(peerId), JSON.stringify(mem, null, 2));
+  memoryCache.set(peerId, { ...mem, recentDialogues: [...mem.recentDialogues] });
+  io.scheduleStateWrite(memoryPath(peerId), mem);
 }
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -96,8 +115,7 @@ function saveMemory(peerId: string, dialogue: string): void {
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  mkdirSync(dirname(WORKER_LOG), { recursive: true });
-  appendFileSync(WORKER_LOG, line + '\n');
+  io.appendLine(WORKER_LOG, `${line}\n`);
 }
 
 // ─── Dialogue generation via OpenClaw LLM ────────────────────────────────────
@@ -236,6 +254,18 @@ async function poll(): Promise<void> {
   }
 }
 
+let pollRunning = false;
+
+async function runPollCycle(): Promise<void> {
+  if (pollRunning) return;
+  pollRunning = true;
+  try {
+    await poll();
+  } finally {
+    pollRunning = false;
+  }
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 const providerInfo = llmProviderInfo();
@@ -245,10 +275,30 @@ log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.api
 log(`  Poll interval: ${POLL_INTERVAL_MS}ms`);
 log(`  Telegram: ${TG_BOT_TOKEN ? 'enabled' : 'disabled'}`);
 
-poll().catch((err) => log(`Poll error: ${(err as Error).message}`));
+runPollCycle().catch((err) => log(`Poll error: ${(err as Error).message}`));
 const timer = setInterval(() => {
-  poll().catch((err) => log(`Poll error: ${(err as Error).message}`));
+  runPollCycle().catch((err) => log(`Poll error: ${(err as Error).message}`));
 }, POLL_INTERVAL_MS);
+timer.unref();
 
-process.on('SIGINT', () => { clearInterval(timer); log('Social worker stopped.'); process.exit(0); });
-process.on('SIGTERM', () => { clearInterval(timer); log('Social worker stopped.'); process.exit(0); });
+let shuttingDown = false;
+
+async function waitForPollIdle(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (pollRunning && Date.now() < deadline) {
+    await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, 50));
+  }
+}
+
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(timer);
+  await waitForPollIdle();
+  log('Social worker stopped.');
+  await io.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });

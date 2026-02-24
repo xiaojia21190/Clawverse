@@ -58,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import type { PeerState } from './composables/usePeers';
 import type { FeedEvent } from './components/StorytellerFeed.vue';
 
@@ -108,7 +108,10 @@ async function refreshLifeEvents() {
     }
   } catch { /* ignore */ }
 }
-setInterval(refreshLifeEvents, 5000);
+const lifeTimer = window.setInterval(refreshLifeEvents, 5000);
+onUnmounted(() => {
+  window.clearInterval(lifeTimer);
+});
 refreshLifeEvents();
 
 function onMove(_pos: { x: number; y: number }) {

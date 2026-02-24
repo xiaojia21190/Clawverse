@@ -49,7 +49,8 @@ export interface UsageLike {
   costUsd?: number;
 }
 
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 function hashToUnitInterval(input: string): number {
@@ -123,8 +124,10 @@ function logRolloutAssignment(input: RolloutAssignment): void {
   const path =
     process.env.CLAWVERSE_ROLLOUT_AUDIT_PATH || 'data/evolution/rollout/assignments.jsonl';
   const fullPath = resolve(process.cwd(), path);
-  mkdirSync(dirname(fullPath), { recursive: true });
-  appendFileSync(fullPath, `${JSON.stringify(input)}\n`);
+  const line = `${JSON.stringify(input)}\n`;
+  void mkdir(dirname(fullPath), { recursive: true })
+    .then(() => appendFile(fullPath, line, 'utf8'))
+    .catch(() => {});
 }
 
 async function safeReportEpisode(
