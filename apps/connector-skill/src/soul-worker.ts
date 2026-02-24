@@ -1,11 +1,11 @@
 /**
  * Clawverse Soul Worker
- * Runs inside OpenClaw environment (has access to Claude config files).
+ * Runs inside OpenClaw environment — reads OpenClaw workspace files for soul data.
  *
  * Flow:
- *   1. Read ~/.claude/SOUL.md (if exists) — represents Claude's "soul"
- *   2. List installed skills from ~/.claude/skills/
- *   3. Get model name via `claude --version`
+ *   1. Read SOUL.md from OpenClaw workspace (or ~/.claude/SOUL.md fallback)
+ *   2. List installed skills from workspace or ~/.claude/skills/
+ *   3. Determine model trait from OpenClaw config
  *   4. Compute soulHash = SHA256(soulContent + skillsList)
  *   5. POST to daemon POST /dna/soul — daemon regenerates DNA with real soul hash
  *
@@ -13,16 +13,16 @@
  */
 
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createTaskRunner } from './index.js';
-
-const execFileAsync = promisify(execFile);
+import { llmProviderInfo } from './llm.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
+
+// Look for soul in OpenClaw workspace first, then Claude dir
+const OPENCLAW_WORKSPACE = process.env.OPENCLAW_WORKSPACE || join(homedir(), '.openclaw/workspace');
 const CLAUDE_DIR = join(homedir(), '.claude');
 
 const runner = createTaskRunner({ source: 'task-runtime' });
@@ -32,28 +32,42 @@ function sha256hex(input: string): string {
 }
 
 function readSoulMd(): string {
-  const path = join(CLAUDE_DIR, 'SOUL.md');
-  if (!existsSync(path)) return '';
-  try { return readFileSync(path, 'utf8'); } catch { return ''; }
+  // Try OpenClaw workspace first
+  const openclawPath = join(OPENCLAW_WORKSPACE, 'SOUL.md');
+  if (existsSync(openclawPath)) {
+    try { return readFileSync(openclawPath, 'utf8'); } catch { /* fall through */ }
+  }
+  // Fallback to Claude dir
+  const claudePath = join(CLAUDE_DIR, 'SOUL.md');
+  if (existsSync(claudePath)) {
+    try { return readFileSync(claudePath, 'utf8'); } catch { /* fall through */ }
+  }
+  return '';
 }
 
 function listSkills(): string[] {
-  const dir = join(CLAUDE_DIR, 'skills');
-  if (!existsSync(dir)) return [];
-  try {
-    return readdirSync(dir)
-      .filter((f) => f.endsWith('.md') || f.endsWith('.yml') || f.endsWith('.yaml'))
-      .sort();
-  } catch { return []; }
+  // Check OpenClaw workspace skills
+  for (const dir of [join(OPENCLAW_WORKSPACE, 'skills'), join(CLAUDE_DIR, 'skills')]) {
+    if (!existsSync(dir)) continue;
+    try {
+      return readdirSync(dir)
+        .filter((f) => f.endsWith('.md') || f.endsWith('.yml') || f.endsWith('.yaml'))
+        .sort();
+    } catch { /* continue */ }
+  }
+  return [];
 }
 
-async function getModelTrait(): Promise<string> {
+function getModelTrait(): string {
   try {
-    const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 5_000 });
-    const version = stdout.trim();
-    if (/opus/i.test(version)) return 'Polymath';
-    if (/sonnet/i.test(version)) return 'Engineer';
-    if (/haiku/i.test(version)) return 'Poet';
+    const info = llmProviderInfo();
+    const model = info.model.toLowerCase();
+    if (/opus/i.test(model)) return 'Polymath';
+    if (/sonnet/i.test(model)) return 'Engineer';
+    if (/haiku/i.test(model)) return 'Poet';
+    if (/gpt.*4/i.test(model)) return 'Engineer';
+    if (/gpt.*3/i.test(model)) return 'Poet';
+    if (/codex/i.test(model)) return 'Engineer';
     return 'Unknown';
   } catch {
     return 'Unknown';
@@ -73,7 +87,7 @@ async function run(): Promise<void> {
 
   const soulContent = readSoulMd();
   const skills = listSkills();
-  const modelTrait = await getModelTrait() as any;
+  const modelTrait = getModelTrait() as any;
 
   if (soulContent) {
     console.log(`[soul-worker] SOUL.md found (${soulContent.length} chars)`);
@@ -88,6 +102,9 @@ async function run(): Promise<void> {
 
   console.log(`[soul-worker] soulHash: ${soulHash.slice(0, 16)}...`);
   console.log(`[soul-worker] badges: [${badges.join(', ')}]`);
+
+  const info = llmProviderInfo();
+  console.log(`[soul-worker] LLM: ${info.provider} / ${info.model} (${info.apiType})`);
 
   await runner.run('soul-enrichment', async () => {
     const res = await fetch(`${DAEMON_URL}/dna/soul`, {

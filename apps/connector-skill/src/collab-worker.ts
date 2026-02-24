@@ -1,25 +1,20 @@
 /**
  * Clawverse Collab Worker
- * Runs inside OpenClaw environment.
+ * Runs inside OpenClaw environment — uses OpenClaw's configured LLM providers.
  *
  * Flow (every POLL_INTERVAL_MS):
  *   1. GET /collab/pending — fetch tasks submitted by remote peers
- *   2. For each task: claude --print to answer
+ *   2. LLM → answer the question
  *   3. POST /collab/resolve with result
- *   4. POST /evolution/episode to record outcome
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createTaskRunner } from './index.js';
-
-const execFileAsync = promisify(execFile);
+import { llmGenerate, llmProviderInfo } from './llm.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_COLLAB_POLL_MS || 60_000);
-const CLAUDE_MODEL = process.env.CLAWVERSE_COLLAB_MODEL || 'claude-haiku-4-5';
 const COLLAB_LOG = resolve(process.cwd(), 'data/collab/worker.log');
 
 const runner = createTaskRunner({ source: 'task-runtime' });
@@ -71,18 +66,13 @@ async function poll(): Promise<void> {
 
     try {
       result = await runner.run('collab-execution', async () => {
-        const { stdout } = await execFileAsync(
-          'claude',
-          ['--print', '--model', CLAUDE_MODEL, '-p', prompt],
-          { timeout: 60_000 },
-        );
-        const text = stdout.trim();
+        const text = await llmGenerate(prompt, { maxTokens: 512 });
         if (!text) throw new Error('Empty LLM response');
         return text;
       });
       success = true;
     } catch (err) {
-      log(`  claude --print failed: ${(err as Error).message}`);
+      log(`  LLM generation failed: ${(err as Error).message}`);
     }
 
     try {
@@ -103,9 +93,10 @@ async function poll(): Promise<void> {
   }
 }
 
+const providerInfo = llmProviderInfo();
 log('Clawverse Collab Worker started');
 log(`  Daemon: ${DAEMON_URL}`);
-log(`  Model: ${CLAUDE_MODEL}`);
+log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
 log(`  Poll interval: ${POLL_INTERVAL_MS}ms`);
 
 poll().catch((err) => log(`Poll error: ${(err as Error).message}`));

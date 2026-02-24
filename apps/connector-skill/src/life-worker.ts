@@ -1,14 +1,10 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createTaskRunner } from './index.js';
-
-const execFileAsync = promisify(execFile);
+import { llmGenerate, llmProviderInfo } from './llm.js';
 
 const DAEMON_URL    = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL = Number(process.env.CLAWVERSE_LIFE_POLL_MS || 90_000);
-const CLAUDE_MODEL  = process.env.CLAWVERSE_LIFE_MODEL || 'claude-haiku-4-5';
 const LIFE_LOG      = resolve(process.cwd(), 'data/life/worker.log');
 
 const runner = createTaskRunner({ source: 'task-runtime' });
@@ -137,9 +133,7 @@ async function poll(): Promise<void> {
 
     await runner.run('life-response', async () => {
       const prompt = buildPrompt(event, me, needs, skills);
-      const { stdout } = await execFileAsync(
-        'claude', ['--print', '--model', CLAUDE_MODEL, '-p', prompt], { timeout: 30_000 }
-      );
+      const stdout = await llmGenerate(prompt, { maxTokens: 256 });
 
       let action = 'reflect';
       try {
@@ -161,9 +155,10 @@ async function poll(): Promise<void> {
   }
 }
 
+const providerInfo = llmProviderInfo();
 log('Clawverse Life Worker started');
 log(`  Daemon: ${DAEMON_URL}`);
-log(`  Model: ${CLAUDE_MODEL}`);
+log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
 log(`  Poll interval: ${POLL_INTERVAL}ms`);
 
 poll().catch(err => log(`Poll error: ${(err as Error).message}`));

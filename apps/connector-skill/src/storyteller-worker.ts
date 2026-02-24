@@ -1,13 +1,10 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createTaskRunner } from './index.js';
+import { llmGenerate, llmProviderInfo } from './llm.js';
 
-const execFileAsync = promisify(execFile);
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const INTERVAL_MS = Number(process.env.CLAWVERSE_STORYTELLER_INTERVAL_MS || 10 * 60_000);
-const CLAUDE_MODEL = process.env.CLAWVERSE_STORYTELLER_MODEL || 'claude-haiku-4-5';
 const LOG_PATH = resolve(process.cwd(), 'data/life/storyteller-worker.log');
 
 mkdirSync(dirname(LOG_PATH), { recursive: true });
@@ -61,9 +58,7 @@ async function run(): Promise<void> {
 
   await runner.run('storyteller-decision', async () => {
     const prompt = buildPrompt(status, peers, storyteller, lifeEvents);
-    const { stdout } = await execFileAsync(
-      'claude', ['--print', '--model', CLAUDE_MODEL, '-p', prompt], { timeout: 30_000 }
-    );
+    const stdout = await llmGenerate(prompt, { maxTokens: 256 });
     const match = stdout.match(/\{[^}]+\}/);
     if (!match) { log('No JSON in output'); return null; }
     const parsed = JSON.parse(match[0]) as { event_type: string; reason: string };
@@ -77,6 +72,12 @@ async function run(): Promise<void> {
     return parsed;
   }).catch((err: Error) => log(`Error: ${err.message}`));
 }
+
+const providerInfo = llmProviderInfo();
+log('Clawverse Storyteller Worker started');
+log(`  Daemon: ${DAEMON_URL}`);
+log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
+log(`  Interval: ${INTERVAL_MS}ms`);
 
 run().catch(err => { log(`Fatal: ${(err as Error).message}`); process.exit(1); });
 if (INTERVAL_MS > 0) setInterval(run, INTERVAL_MS);

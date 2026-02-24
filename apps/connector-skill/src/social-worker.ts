@@ -1,19 +1,17 @@
 /**
  * Clawverse Social Worker
- * Runs inside OpenClaw environment (has access to claude CLI + memory system).
+ * Runs inside OpenClaw environment — uses OpenClaw's configured LLM providers.
  *
  * Flow:
  *   1. Poll daemon GET /social/pending every 30s
  *   2. For each pending event:
  *      a. Load peer memory from data/social/memories/<peerId>.json
- *      b. Generate dialogue via `claude --print` (uses OpenClaw's model & key)
+ *      b. Generate dialogue via OpenClaw LLM provider
  *      c. POST /social/resolve with dialogue
  *      d. Save notable dialogue snippet to peer memory file
  *      e. Send Telegram notification (reuses OpenClaw TG config)
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import {
   existsSync,
   mkdirSync,
@@ -23,14 +21,12 @@ import {
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createTaskRunner } from './index.js';
-
-const execFileAsync = promisify(execFile);
+import { llmGenerate, llmProviderInfo } from './llm.js';
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_SOCIAL_POLL_MS || 30_000);
-const CLAUDE_MODEL = process.env.CLAWVERSE_SOCIAL_MODEL || 'claude-haiku-4-5';
 const MEMORIES_DIR = resolve(process.cwd(), 'data/social/memories');
 const WORKER_LOG = resolve(process.cwd(), 'data/social/worker.log');
 const MAX_MEMORY_SNIPPETS = 5;
@@ -38,7 +34,6 @@ const MAX_MEMORY_SNIPPETS = 5;
 // Telegram (same env vars as evolve:notify)
 const TG_BOT_TOKEN = process.env.CLAWVERSE_TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.CLAWVERSE_TELEGRAM_CHAT_ID || '';
-// Only notify for first-meet events
 const NOTIFY_TRIGGERS = new Set(['new-peer']);
 
 const runner = createTaskRunner({ source: 'task-runtime' });
@@ -66,7 +61,7 @@ interface PendingEvent {
 
 interface PeerMemory {
   peerId: string;
-  recentDialogues: string[]; // last N notable lines
+  recentDialogues: string[];
   lastUpdated: string;
 }
 
@@ -105,7 +100,7 @@ function log(msg: string): void {
   appendFileSync(WORKER_LOG, line + '\n');
 }
 
-// ─── Dialogue generation via claude --print ──────────────────────────────────
+// ─── Dialogue generation via OpenClaw LLM ────────────────────────────────────
 
 function buildPrompt(event: PendingEvent, memory: PeerMemory): string {
   const relationshipLabel =
@@ -148,26 +143,14 @@ async function generateDialogue(event: PendingEvent): Promise<string> {
   const prompt = buildPrompt(event, memory);
 
   try {
-    const { stdout, stderr } = await execFileAsync(
-      'claude',
-      ['--print', '--model', CLAUDE_MODEL, '-p', prompt],
-      { timeout: 30_000 }
-    );
-
-    if (stderr && !stdout) {
-      log(`claude stderr: ${stderr.trim()}`);
-      return '';
-    }
-
-    const dialogue = stdout.trim();
+    const dialogue = await llmGenerate(prompt, { maxTokens: 256 });
     if (dialogue) {
       saveMemory(event.to, dialogue);
     }
     return dialogue;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`claude --print failed: ${msg}`);
-    // Fallback: use the event context to produce a generic line without LLM
+    log(`LLM generation failed: ${msg}`);
     return `[${event.fromName} nods at ${event.toName}]`;
   }
 }
@@ -255,18 +238,17 @@ async function poll(): Promise<void> {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+const providerInfo = llmProviderInfo();
 log('Clawverse Social Worker started');
 log(`  Daemon: ${DAEMON_URL}`);
-log(`  Model: ${CLAUDE_MODEL}`);
+log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
 log(`  Poll interval: ${POLL_INTERVAL_MS}ms`);
 log(`  Telegram: ${TG_BOT_TOKEN ? 'enabled' : 'disabled'}`);
 
-// Run immediately, then on interval
 poll().catch((err) => log(`Poll error: ${(err as Error).message}`));
 const timer = setInterval(() => {
   poll().catch((err) => log(`Poll error: ${(err as Error).message}`));
 }, POLL_INTERVAL_MS);
 
-// Graceful shutdown
 process.on('SIGINT', () => { clearInterval(timer); log('Social worker stopped.'); process.exit(0); });
 process.on('SIGTERM', () => { clearInterval(timer); log('Social worker stopped.'); process.exit(0); });

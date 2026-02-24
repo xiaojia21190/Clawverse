@@ -1,28 +1,22 @@
 /**
  * Clawverse Walk Worker
- * Runs inside OpenClaw environment.
+ * Runs inside OpenClaw environment — uses OpenClaw's configured LLM providers.
  *
  * Flow (every WALK_INTERVAL_MS):
  *   1. GET daemon /status — get my position + mood
  *   2. GET daemon /peers — get all peers' positions
  *   3. Build map context prompt
- *   4. `claude --print` → decide next position {"x": N, "y": M}
+ *   4. LLM → decide next position {"x": N, "y": M}
  *   5. POST /move to daemon
- *
- * Stays intentionally sparse — Claude is the decision engine, not us.
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createTaskRunner } from './index.js';
-
-const execFileAsync = promisify(execFile);
+import { llmGenerate, llmProviderInfo } from './llm.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
-const WALK_INTERVAL_MS = Number(process.env.CLAWVERSE_WALK_INTERVAL_MS || 5 * 60_000); // 5 min
-const CLAUDE_MODEL = process.env.CLAWVERSE_WALK_MODEL || 'claude-haiku-4-5';
+const WALK_INTERVAL_MS = Number(process.env.CLAWVERSE_WALK_INTERVAL_MS || 5 * 60_000);
 const WALK_LOG = resolve(process.cwd(), 'data/social/walk.log');
 const GRID_SIZE = 40;
 
@@ -118,13 +112,9 @@ async function walk(): Promise<void> {
   const prompt = buildPrompt(me, peersData.all ?? []);
 
   await runner.run('walk-decision', async () => {
-    const { stdout } = await execFileAsync(
-      'claude',
-      ['--print', '--model', CLAUDE_MODEL, '-p', prompt],
-      { timeout: 30_000 }
-    );
+    const stdout = await llmGenerate(prompt, { maxTokens: 128 });
     const newPos = parsePosition(stdout);
-    if (!newPos) throw new Error('Could not parse position from claude output');
+    if (!newPos) throw new Error('Could not parse position from LLM output');
 
     const res = await fetch(`${DAEMON_URL}/move`, {
       method: 'POST',
@@ -139,12 +129,12 @@ async function walk(): Promise<void> {
   }).catch((err: Error) => log(`Walk failed: ${err.message}`));
 }
 
+const providerInfo = llmProviderInfo();
 log('Clawverse Walk Worker started');
 log(`  Daemon: ${DAEMON_URL}`);
-log(`  Model: ${CLAUDE_MODEL}`);
+log(`  LLM: ${providerInfo.provider} / ${providerInfo.model} (${providerInfo.apiType})`);
 log(`  Walk interval: ${WALK_INTERVAL_MS}ms`);
 
-// Walk immediately, then on interval
 walk().catch((err) => log(`Walk error: ${(err as Error).message}`));
 const timer = setInterval(() => {
   walk().catch((err) => log(`Walk error: ${(err as Error).message}`));
