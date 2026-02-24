@@ -1,11 +1,19 @@
 <template>
   <div class="map-wrapper" ref="wrapperRef">
-    <canvas ref="canvasRef" class="map-canvas" @click="onCanvasClick" @mousemove="onMouseMove" @mouseleave="hoveredPeer = null" />
+    <canvas
+      ref="canvasRef"
+      class="map-canvas"
+      @click="onCanvasClick"
+      @mousemove="onMouseMove"
+      @mouseleave="hoveredPeer = null"
+    />
+
     <div v-if="hoveredPeer" class="tooltip" :style="tooltipStyle">
       <div class="tip-name">{{ hoveredPeer.name }}</div>
-      <div class="tip-info">{{ hoveredPeer.dna?.archetype }} · {{ hoveredPeer.mood }}</div>
+      <div class="tip-info">{{ hoveredPeer.dna?.archetype }} - {{ hoveredPeer.mood }}</div>
       <div class="tip-pos">({{ hoveredPeer.position.x }}, {{ hoveredPeer.position.y }})</div>
     </div>
+
     <div v-if="moveError" class="move-error">{{ moveError }}</div>
   </div>
 </template>
@@ -33,51 +41,51 @@ const moveError = ref('');
 const GRID = 40;
 
 const ZONE_COLORS: Record<string, string> = {
-  Plaza: '#2a3a2a',
-  Market: '#2a2a3a',
-  Library: '#1a2a3a',
-  Workshop: '#2a1a1a',
-  Park: '#1a3a1a',
-  Tavern: '#3a2a1a',
-  Residential: '#1a1a2a',
+  Plaza: '#fce8ef',
+  Market: '#fff3d2',
+  Library: '#dff6ff',
+  Workshop: '#ffe8dc',
+  Park: '#ddf8e9',
+  Tavern: '#f7e8ff',
+  Residential: '#e8ecff',
 };
 
 const TERRAIN_COLORS: Record<string, string> = {
-  grass: '#1a2e1a',
-  road: '#3a2e1a',
-  water: '#0d1a2e',
+  grass: '#e6f8ee',
+  road: '#f6e3d2',
+  water: '#d6eeff',
 };
 
-const ARCHETYPE_EMOJIS: Record<string, string> = {
-  Warrior: '🦀',
-  Artisan: '🦐',
-  Scholar: '🐙',
-  Ranger: '🦑',
+const ARCHETYPE_MARKERS: Record<string, string> = {
+  Warrior: 'W',
+  Artisan: 'A',
+  Scholar: 'S',
+  Ranger: 'R',
 };
 
-const BUILDING_EMOJIS: Record<string, string> = {
-  forge: '⚒',
-  archive: '📚',
-  beacon: '🔦',
-  market_stall: '🏪',
-  shelter: '⛺',
+const BUILDING_MARKERS: Record<string, string> = {
+  forge: 'F',
+  archive: 'A',
+  beacon: 'B',
+  market_stall: 'M',
+  shelter: 'H',
 };
 
 const MOOD_COLORS: Record<string, string> = {
-  idle: '#4a8c4a',
-  working: '#4a7a8c',
-  busy: '#8c8c4a',
-  stressed: '#8c5a4a',
-  distressed: '#8c2a2a',
-  sleeping: '#4a4a6a',
+  idle: '#10c9a8',
+  working: '#3abff8',
+  busy: '#ffb703',
+  stressed: '#ff8c42',
+  distressed: '#ef476f',
+  sleeping: '#8ea4d8',
 };
 
 const RELATION_COLORS: Record<string, string> = {
-  ally: '#3fb950',
-  friend: '#58a6ff',
-  stranger: '#484f58',
-  nemesis: '#f85149',
-  rival: '#d29922',
+  ally: '#10c9a8',
+  friend: '#3abff8',
+  stranger: '#94a2c6',
+  nemesis: '#ef476f',
+  rival: '#ff9f1c',
 };
 
 function getCellSize(): number {
@@ -96,53 +104,59 @@ function zoneName(x: number, y: number): string {
   return 'Residential';
 }
 
-function draw() {
+function draw(): void {
   const canvas = canvasRef.value;
   if (!canvas) return;
+
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const cs = getCellSize();
 
+  const cs = getCellSize();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Layer 0: terrain + zone colors
   const terrain = props.worldMap?.terrain ?? [];
   for (let y = 0; y < GRID; y++) {
     for (let x = 0; x < GRID; x++) {
       const t = terrain[y * GRID + x] ?? 'grass';
       const zone = zoneName(x, y);
-      if (t === 'road') {
-        ctx.fillStyle = TERRAIN_COLORS.road;
-      } else if (t === 'water') {
-        ctx.fillStyle = TERRAIN_COLORS.water;
-      } else {
-        ctx.fillStyle = ZONE_COLORS[zone] ?? TERRAIN_COLORS.grass;
-      }
+      if (t === 'road') ctx.fillStyle = TERRAIN_COLORS.road;
+      else if (t === 'water') ctx.fillStyle = TERRAIN_COLORS.water;
+      else ctx.fillStyle = ZONE_COLORS[zone] ?? TERRAIN_COLORS.grass;
       ctx.fillRect(x * cs, y * cs, cs, cs);
     }
   }
 
-  // Grid lines (very subtle)
-  ctx.strokeStyle = 'rgba(48,54,61,0.3)';
+  ctx.strokeStyle = 'rgba(107, 130, 174, 0.2)';
   ctx.lineWidth = 0.5;
   for (let i = 0; i <= GRID; i++) {
-    ctx.beginPath(); ctx.moveTo(i * cs, 0); ctx.lineTo(i * cs, GRID * cs); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, i * cs); ctx.lineTo(GRID * cs, i * cs); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(i * cs, 0);
+    ctx.lineTo(i * cs, GRID * cs);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(0, i * cs);
+    ctx.lineTo(GRID * cs, i * cs);
+    ctx.stroke();
   }
 
-  // Zone borders (thicker)
-  ctx.strokeStyle = '#30363d';
+  ctx.strokeStyle = '#9bb0d8';
   ctx.lineWidth = 1.5;
   for (const bx of [10, 20]) {
-    ctx.beginPath(); ctx.moveTo(bx * cs, 0); ctx.lineTo(bx * cs, GRID * cs); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(bx * cs, 0);
+    ctx.lineTo(bx * cs, GRID * cs);
+    ctx.stroke();
   }
   for (const by of [10, 20]) {
-    ctx.beginPath(); ctx.moveTo(0, by * cs); ctx.lineTo(GRID * cs, by * cs); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, by * cs);
+    ctx.lineTo(GRID * cs, by * cs);
+    ctx.stroke();
   }
 
-  // Zone labels
-  ctx.font = '10px monospace';
-  ctx.fillStyle = '#484f58';
+  ctx.font = '10px "Manrope", sans-serif';
+  ctx.fillStyle = '#6a7ea9';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const labels = [
@@ -153,39 +167,34 @@ function draw() {
     { name: 'Park', x: 1, y: 21 },
     { name: 'Tavern', x: 11, y: 21 },
   ];
-  for (const l of labels) {
-    ctx.fillText(l.name, l.x * cs + 2, l.y * cs + 2);
+  for (const label of labels) {
+    ctx.fillText(label.name, label.x * cs + 2, label.y * cs + 2);
   }
 
-  // Layer 1: buildings
   const buildings = props.worldMap?.buildings ?? [];
   for (const b of buildings) {
     const bx = b.position.x * cs;
     const by = b.position.y * cs;
 
-    // Building background
-    ctx.fillStyle = 'rgba(42,32,64,0.7)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
     ctx.fillRect(bx + 1, by + 1, cs - 2, cs - 2);
 
-    // Building border
-    ctx.strokeStyle = '#6e40c9';
+    ctx.strokeStyle = '#7f97cb';
     ctx.lineWidth = 1;
     ctx.strokeRect(bx + 1, by + 1, cs - 2, cs - 2);
 
-    // Building emoji
     if (cs >= 12) {
-      ctx.font = `${Math.max(8, cs - 6)}px serif`;
+      ctx.font = `${Math.max(8, cs - 6)}px "Manrope", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#e6edf3';
-      ctx.fillText(BUILDING_EMOJIS[b.type] ?? '🏠', bx + cs / 2, by + cs / 2);
+      ctx.fillStyle = '#2a406f';
+      ctx.fillText(BUILDING_MARKERS[b.type] ?? 'B', bx + cs / 2, by + cs / 2);
     }
   }
 
-  // Layer 2: relation lines (optional)
   if (props.showRelations) {
     ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.25;
+    ctx.globalAlpha = 0.28;
     const peerList = Array.from(props.peers.values());
     for (let i = 0; i < peerList.length; i++) {
       for (let j = i + 1; j < peerList.length; j++) {
@@ -201,80 +210,79 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
-  // Layer 3: peers
   for (const peer of props.peers.values()) {
     const px = peer.position.x * cs + cs / 2;
     const py = peer.position.y * cs + cs / 2;
     const r = Math.max(4, cs / 2 - 2);
     const isMe = peer.id === props.myId;
 
-    // Mood-colored circle
     ctx.beginPath();
     ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fillStyle = peer.dna?.appearance?.primaryColor ?? MOOD_COLORS[peer.mood] ?? '#4a4a4a';
+    ctx.fillStyle = peer.dna?.appearance?.primaryColor ?? MOOD_COLORS[peer.mood] ?? '#8ea4d8';
     ctx.fill();
 
-    // Mood ring
-    ctx.strokeStyle = MOOD_COLORS[peer.mood] ?? '#4a4a4a';
+    ctx.strokeStyle = MOOD_COLORS[peer.mood] ?? '#8ea4d8';
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // "Me" highlight (green glow)
     if (isMe) {
       ctx.beginPath();
       ctx.arc(px, py, r + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = '#3fb950';
+      ctx.strokeStyle = '#10c9a8';
       ctx.lineWidth = 2;
       ctx.stroke();
     }
 
-    // Archetype emoji overlay
     if (cs >= 16) {
-      ctx.font = `${Math.max(8, cs - 8)}px serif`;
+      ctx.font = `${Math.max(7, cs - 10)}px "Manrope", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ARCHETYPE_EMOJIS[peer.dna?.archetype ?? ''] ?? '🐚', px, py);
+      ctx.fillStyle = '#243150';
+      ctx.fillText(ARCHETYPE_MARKERS[peer.dna?.archetype ?? ''] ?? 'P', px, py);
     }
 
-    // Name label (if cell size big enough)
     if (cs >= 20) {
-      ctx.font = '9px monospace';
+      ctx.font = '9px "Manrope", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillStyle = '#e6edf3';
+      ctx.fillStyle = '#25314d';
       ctx.fillText(peer.name.slice(0, 10), px, py + r + 3);
     }
   }
 }
 
-function resize() {
+function resize(): void {
   const canvas = canvasRef.value;
   const wrapper = wrapperRef.value;
   if (!canvas || !wrapper) return;
+
   const size = Math.min(wrapper.clientWidth, wrapper.clientHeight, 800);
   canvas.width = size;
   canvas.height = size;
   draw();
 }
 
-function onMouseMove(e: MouseEvent) {
+function onMouseMove(e: MouseEvent): void {
   const canvas = canvasRef.value;
   if (!canvas) return;
+
   const rect = canvas.getBoundingClientRect();
   const cs = getCellSize();
   const gx = Math.floor((e.clientX - rect.left) / cs);
   const gy = Math.floor((e.clientY - rect.top) / cs);
-  hoveredPeer.value = Array.from(props.peers.values()).find(
-    p => p.position.x === gx && p.position.y === gy
-  ) ?? null;
+
+  hoveredPeer.value =
+    Array.from(props.peers.values()).find(p => p.position.x === gx && p.position.y === gy) ?? null;
+
   if (hoveredPeer.value) {
     tooltipStyle.value = `left:${e.clientX - rect.left + 12}px;top:${e.clientY - rect.top}px`;
   }
 }
 
-async function onCanvasClick(e: MouseEvent) {
+async function onCanvasClick(e: MouseEvent): Promise<void> {
   const canvas = canvasRef.value;
   if (!canvas || !props.myId) return;
+
   const rect = canvas.getBoundingClientRect();
   const cs = getCellSize();
   const x = Math.floor((e.clientX - rect.left) / cs);
@@ -293,7 +301,9 @@ async function onCanvasClick(e: MouseEvent) {
   } catch (err) {
     moveError.value = `Move error: ${(err as Error).message}`;
   } finally {
-    setTimeout(() => { moveError.value = ''; }, 2000);
+    setTimeout(() => {
+      moveError.value = '';
+    }, 2200);
   }
 }
 
@@ -312,42 +322,68 @@ onUnmounted(() => ro.disconnect());
   position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0d1117;
-  overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+  background:
+    radial-gradient(circle at 12% 14%, rgba(255, 183, 3, 0.2), transparent 45%),
+    radial-gradient(circle at 88% 86%, rgba(58, 191, 248, 0.26), transparent 44%),
+    linear-gradient(145deg, #f4f8ff, #ffffff);
+  box-shadow: var(--shadow-pressed);
 }
+
 .map-canvas {
-  cursor: crosshair;
   display: block;
+  cursor: crosshair;
   image-rendering: pixelated;
 }
+
 .tooltip {
   position: absolute;
-  background: #1c2128;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  padding: 6px 10px;
-  pointer-events: none;
-  font-size: 12px;
-  color: #e6edf3;
   z-index: 10;
+  pointer-events: none;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-soft);
+  background: linear-gradient(145deg, #ffffff, var(--surface-soft));
+  box-shadow: var(--shadow-float);
+  font-size: 12px;
+  color: var(--text-strong);
 }
-.tip-name { font-weight: 600; color: #58a6ff; }
-.tip-info { color: #8b949e; font-size: 11px; margin-top: 2px; }
-.tip-pos { color: #6e7681; font-size: 10px; }
+
+.tip-name {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--accent-sky);
+}
+
+.tip-info {
+  margin-top: 2px;
+  font-size: 0.7rem;
+  color: var(--text-body);
+}
+
+.tip-pos {
+  margin-top: 2px;
+  font-size: 0.62rem;
+  color: var(--text-muted);
+}
+
 .move-error {
   position: absolute;
-  bottom: 12px;
   left: 50%;
+  bottom: 12px;
   transform: translateX(-50%);
-  background: #3d1a1a;
-  color: #f85149;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 71, 111, 0.24);
+  background: rgba(239, 71, 111, 0.12);
+  color: #a22a4a;
+  font-size: 0.69rem;
+  font-weight: 700;
 }
 </style>

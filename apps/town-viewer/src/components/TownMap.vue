@@ -2,10 +2,11 @@
   <div class="town-map" @mouseleave="hoveredPeer = null">
     <div class="map-header">
       <span class="location" v-for="loc in LOCATIONS" :key="loc.name">
-        {{ loc.emoji }} {{ loc.name }}
+        {{ loc.badge }} {{ loc.name }}
       </span>
       <span v-if="myId" class="my-id">You: {{ myId.slice(0, 8) }}</span>
     </div>
+
     <div class="grid">
       <div
         v-for="(cell, idx) in grid"
@@ -22,9 +23,10 @@
         <span v-if="cell" class="peer-icon" :style="{ color: cell.dna.appearance.primaryColor }">
           {{ archetypeIcon(cell.dna.archetype) }}
         </span>
-        <span v-else-if="isMoveTarget(idx)" class="target-dot">·</span>
+        <span v-else-if="isMoveTarget(idx)" class="target-dot">.</span>
       </div>
     </div>
+
     <PeerCard v-if="hoveredPeer" :peer="hoveredPeer" class="tooltip" />
     <div v-if="moveError" class="move-error">{{ moveError }}</div>
   </div>
@@ -48,12 +50,12 @@ const pendingMoveIdx = ref<number | null>(null);
 const moveError = ref('');
 
 const LOCATIONS = [
-  { name: 'Plaza', emoji: '🏛️' },
-  { name: 'Market', emoji: '🏪' },
-  { name: 'Library', emoji: '📚' },
-  { name: 'Workshop', emoji: '🏭' },
-  { name: 'Park', emoji: '🌳' },
-  { name: 'Tavern', emoji: '🍺' },
+  { name: 'Plaza', badge: 'PZ' },
+  { name: 'Market', badge: 'MK' },
+  { name: 'Library', badge: 'LB' },
+  { name: 'Workshop', badge: 'WK' },
+  { name: 'Park', badge: 'PK' },
+  { name: 'Tavern', badge: 'TV' },
 ];
 
 const grid = computed(() => {
@@ -68,12 +70,12 @@ const grid = computed(() => {
 
 function archetypeIcon(archetype: string): string {
   const map: Record<string, string> = {
-    Warrior: '🦀',
-    Artisan: '🦐',
-    Scholar: '🐙',
-    Ranger: '🦑',
+    Warrior: 'W',
+    Artisan: 'A',
+    Scholar: 'S',
+    Ranger: 'R',
   };
-  return map[archetype] ?? '🐚';
+  return map[archetype] ?? 'P';
 }
 
 function isMoveTarget(idx: number): boolean {
@@ -82,7 +84,7 @@ function isMoveTarget(idx: number): boolean {
 
 async function handleCellClick(idx: number): Promise<void> {
   if (!props.myId) return;
-  if (grid.value[idx] !== null) return; // occupied
+  if (grid.value[idx] !== null) return;
 
   const x = idx % GRID_SIZE;
   const y = Math.floor(idx / GRID_SIZE);
@@ -104,7 +106,9 @@ async function handleCellClick(idx: number): Promise<void> {
   } catch (err) {
     moveError.value = `Move error: ${(err as Error).message}`;
   } finally {
-    setTimeout(() => { pendingMoveIdx.value = null; }, 1000);
+    setTimeout(() => {
+      pendingMoveIdx.value = null;
+    }, 1000);
   }
 }
 </script>
@@ -119,18 +123,28 @@ async function handleCellClick(idx: number): Promise<void> {
 
 .map-header {
   display: flex;
-  gap: 12px;
-  margin-bottom: 8px;
-  font-size: 11px;
-  color: #8b949e;
   flex-wrap: wrap;
   align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--text-body);
+}
+
+.location {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(91, 114, 164, 0.12);
+  box-shadow: var(--shadow-pressed);
 }
 
 .my-id {
   margin-left: auto;
-  color: #58a6ff;
-  font-family: monospace;
+  color: var(--accent-sky);
+  font-family: 'JetBrains Mono', 'Cascadia Mono', monospace;
 }
 
 .grid {
@@ -139,31 +153,54 @@ async function handleCellClick(idx: number): Promise<void> {
   gap: 1px;
   width: 100%;
   aspect-ratio: 1;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
   overflow: hidden;
+  background: rgba(145, 166, 209, 0.2);
 }
 
 .cell {
-  background: #0d1117;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  background: rgba(246, 250, 255, 0.8);
   cursor: default;
-  transition: background 0.1s;
+  transition: background 0.14s ease;
+  font-size: 10px;
 }
 
-.cell.occupied { background: #1c2128; cursor: pointer; }
-.cell.occupied:hover { background: #21262d; }
-.cell.mine { background: #1a2a1a; outline: 1px solid #3fb950; }
-.cell.clickable { cursor: crosshair; }
-.cell.clickable:hover { background: #161f2e; }
+.cell.occupied {
+  cursor: pointer;
+  background: rgba(231, 239, 255, 0.95);
+}
 
-.peer-icon { line-height: 1; }
+.cell.occupied:hover {
+  background: rgba(216, 230, 255, 0.95);
+}
 
-.target-dot { color: #58a6ff; font-size: 14px; opacity: 0.6; }
+.cell.mine {
+  background: rgba(16, 201, 168, 0.2);
+  outline: 1px solid rgba(16, 201, 168, 0.58);
+}
+
+.cell.clickable {
+  cursor: crosshair;
+}
+
+.cell.clickable:hover {
+  background: rgba(58, 191, 248, 0.17);
+}
+
+.peer-icon {
+  line-height: 1;
+  font-weight: 800;
+}
+
+.target-dot {
+  color: var(--accent-sky);
+  font-size: 14px;
+  opacity: 0.65;
+}
 
 .tooltip {
   position: absolute;
@@ -174,13 +211,14 @@ async function handleCellClick(idx: number): Promise<void> {
 
 .move-error {
   position: absolute;
-  bottom: 12px;
   left: 50%;
+  bottom: 12px;
   transform: translateX(-50%);
-  background: #3d1a1a;
-  color: #f85149;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 71, 111, 0.24);
+  background: rgba(239, 71, 111, 0.13);
+  color: #a22a4a;
   padding: 4px 10px;
-  border-radius: 4px;
   font-size: 11px;
 }
 </style>
