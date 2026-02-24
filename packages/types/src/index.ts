@@ -219,3 +219,39 @@ export interface Location {
   position: Position;
   radius: number;
 }
+
+// =====================
+// Economy System (live)
+// =====================
+
+export interface ResourceState {
+  compute: number;     // 0-200
+  storage: number;     // 0-200
+  bandwidth: number;   // 0-200
+  reputation: number;  // 0-∞
+  updatedAt: string;
+}
+
+// =====================
+// World Map
+// =====================
+
+export type BuildingType = 'forge' | 'archive' | 'beacon' | 'market_stall' | 'shelter';
+
+export interface Building {
+  id: string;
+  type: BuildingType;
+  position: Position;
+  ownerId: string;
+  ownerName: string;
+  effect: string;
+  createdAt: string;
+}
+
+export type TerrainType = 'grass' | 'road' | 'water';
+
+// =====================
+// Storyteller
+// =====================
+
+export type StorytellerMode = 'Randy' | 'Cassandra' | 'Phoebe';
