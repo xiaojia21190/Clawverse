@@ -10,9 +10,11 @@ import { EventEngine, LIFE_EVENT_TYPES, isLifeEventType } from './events.js';
 import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
+import { FactionSystem } from './faction.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
+import { createTradeRequest } from '@clawverse/protocol';
 
 interface APIContext {
   stateStore: StateStore;
@@ -28,6 +30,7 @@ interface APIContext {
   economy: EconomySystem;
   world: WorldMap;
   storyteller: Storyteller;
+  faction?: FactionSystem;
   // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
 }
@@ -368,26 +371,109 @@ export async function createHttpServer(
   fastify.get('/economy/resources', async () => context.economy.getResources());
 
   fastify.post('/economy/trade', async (request, reply) => {
-    const { toId, resource, amount } = request.body as { toId: string; resource: string; amount: number };
+    const { toId, resource, amount, resourceWant, amountWant } = request.body as {
+      toId: string; resource: string; amount: number;
+      resourceWant?: string; amountWant?: number;
+    };
     const validResources = ['compute', 'storage', 'bandwidth', 'reputation'];
     if (!validResources.includes(resource) || amount <= 0) {
       return reply.code(400).send({ error: 'invalid resource or amount' });
     }
+
     const myState = context.stateStore.getMyState();
     const myZone = locationName(myState?.position ?? { x: 0, y: 0 });
-    if (myZone !== 'Market') {
-      return reply.code(403).send({ error: 'trading only available in Market zone' });
+    const hasMarketStall = context.world.getMap().buildings.some(
+      b => b.type === 'market_stall' && b.ownerId === context.myId
+    );
+    if (myZone !== 'Market' && !hasMarketStall) {
+      return reply.code(403).send({ error: 'trading only available in Market zone or with market_stall' });
     }
+
+    // P2P trade: send TradeRequest to peer
+    if (resourceWant && amountWant && amountWant > 0) {
+      if (!context.economy.canAfford(resource as any, amount)) {
+        return reply.code(400).send({ error: 'insufficient resources to offer' });
+      }
+      context.economy.consume(resource as any, amount);
+
+      const tradeId = `trade-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+      context.economy.createPendingTrade(tradeId, context.myId, resource, amount, resourceWant, amountWant);
+
+      const msg = createTradeRequest({
+        tradeId, fromPeerId: context.myId,
+        resource, amount, resourceWant, amountWant,
+      });
+      const sent = await context.network.sendTo(toId, msg);
+      if (!sent) {
+        // Refund on send failure
+        context.economy.award(resource as any, amount);
+        context.economy.rejectTrade(tradeId);
+        return reply.code(502).send({ error: 'peer not reachable' });
+      }
+      return { success: true, tradeId, status: 'pending' };
+    }
+
+    // Local one-way transfer (legacy)
     const ok = context.economy.consume(resource as any, amount);
     if (!ok) return reply.code(400).send({ error: 'insufficient resources' });
     context.economy.recordTrade(context.myId, toId, resource, amount);
     return { success: true };
   });
 
+  fastify.get('/economy/trades', async () => ({
+    pending: context.economy.getPendingTrades(),
+    history: context.economy.getTradeHistory(),
+  }));
+
   fastify.get('/economy/market', async () => {
     const peers = context.stateStore.getAllPeers();
     const marketPeers = peers.filter(p => locationName(p.position) === 'Market');
     return { peers: marketPeers.map(p => ({ id: p.id, name: p.name, position: p.position })) };
+  });
+
+  // Faction endpoints
+  fastify.get('/factions', async () => ({
+    factions: context.faction?.getFactions() ?? [],
+  }));
+
+  fastify.get('/factions/wars', async () => ({
+    wars: context.faction?.getActiveWars() ?? [],
+  }));
+
+  fastify.get('/factions/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const faction = context.faction?.getFaction(id);
+    if (!faction) return reply.code(404).send({ error: 'faction not found' });
+    return faction;
+  });
+
+  fastify.post('/factions', async (request, reply) => {
+    const { name, motto } = request.body as { name: string; motto: string };
+    if (!name || !motto) return reply.code(400).send({ error: 'name and motto required' });
+    const faction = context.faction?.createFaction(name, context.myId, motto);
+    if (!faction) return reply.code(400).send({ error: 'cannot create faction (need 3+ allies or already in one)' });
+    return faction;
+  });
+
+  fastify.post('/factions/:id/join', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ok = context.faction?.joinFaction(id, context.myId);
+    if (!ok) return reply.code(400).send({ error: 'cannot join (already in faction or negative sentiment)' });
+    return { success: true };
+  });
+
+  fastify.post('/factions/:id/leave', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ok = context.faction?.leaveFaction(context.myId);
+    if (!ok) return reply.code(400).send({ error: 'not in a faction' });
+    return { success: true };
+  });
+
+  fastify.post('/factions/wars/:id/peace', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ok = context.faction?.declarePeace(id, context.myId);
+    if (!ok) return reply.code(400).send({ error: 'cannot declare peace (not in war faction or insufficient reputation)' });
+    return { success: true };
   });
 
   // SSE: peer state stream

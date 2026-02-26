@@ -4,6 +4,7 @@ import type { StateStore } from './state.js';
 import type { SocialSystem } from './social.js';
 import type { NeedsSystem } from './needs.js';
 import type { EconomySystem } from './economy.js';
+import type { FactionSystem } from './faction.js';
 import { logger } from './logger.js';
 
 export type { StorytellerMode };
@@ -15,12 +16,15 @@ interface Snapshot {
   nemesisCount: number;
   avgCompute: number;
   criticalNeedsCount: number;
+  factionCount: number;
+  activeWarCount: number;
 }
 
 function tension(s: Snapshot): number {
   return Math.max(0, Math.min(100,
     s.distressedCount * 20 + s.nemesisCount * 15 +
-    s.criticalNeedsCount * 10 + Math.max(0, 50 - s.avgCompute) -
+    s.criticalNeedsCount * 10 + Math.max(0, 50 - s.avgCompute) +
+    s.activeWarCount * 20 -
     s.allyCount * 5
   ));
 }
@@ -36,6 +40,7 @@ export class Storyteller {
     private readonly social: SocialSystem,
     private readonly needs: NeedsSystem,
     private readonly economy: EconomySystem,
+    private readonly faction?: FactionSystem,
   ) {}
 
   setMode(mode: StorytellerMode): void {
@@ -71,6 +76,8 @@ export class Storyteller {
       avgCompute: this.economy.getResources().compute,
       criticalNeedsCount: (['social', 'tasked', 'wanderlust', 'creative'] as const)
         .filter(k => n[k] < 15).length,
+      factionCount: this.faction?.getFactionCount() ?? 0,
+      activeWarCount: this.faction?.getActiveWarCount() ?? 0,
     };
   }
 
@@ -107,6 +114,9 @@ export class Storyteller {
     } else {
       if (snap.allyCount >= 3) this._emit('faction_founding', { allyCount: snap.allyCount });
       if (snap.distressedCount >= 2) this._emit('mood_crisis', { count: snap.distressedCount });
+      if (snap.factionCount >= 2 && snap.activeWarCount === 0 && Math.random() < 0.3) {
+        this.faction?.checkWarConditions();
+      }
     }
   }
 
@@ -115,6 +125,10 @@ export class Storyteller {
     else if (t > 60) {
       this._emit('peace_treaty', { reason: 'Phoebe' });
       this._emit('resource_windfall', { reason: 'Phoebe' });
+    }
+    // Phoebe actively seeks peace during wars
+    if (snap.activeWarCount > 0 && Math.random() < 0.5) {
+      this._emit('peace_treaty', { reason: 'Phoebe compassion' });
     }
   }
 }

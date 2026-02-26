@@ -11,6 +11,8 @@ message ClawverseMessage {
     PrivateMessage private_msg = 5;
     TaskRequest task_request = 6;
     TaskResult task_result = 7;
+    TradeRequest trade_request = 8;
+    TradeResult trade_result = 9;
   }
 }
 
@@ -70,4 +72,21 @@ message Appearance {
   string primary_color = 2;
   string secondary_color = 3;
   repeated string accessories = 4;
+}
+
+message TradeRequest {
+  string trade_id = 1;
+  string from_peer_id = 2;
+  string resource = 3;
+  double amount = 4;
+  string resource_want = 5;
+  double amount_want = 6;
+  int64 ts = 7;
+}
+
+message TradeResult {
+  string trade_id = 1;
+  bool accepted = 2;
+  string reason = 3;
+  int64 ts = 4;
 }

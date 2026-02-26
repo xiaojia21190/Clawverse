@@ -12,6 +12,11 @@
 
     "daemon:start": "pnpm --filter @clawverse/daemon start",
     "daemon:dev": "pnpm --filter @clawverse/daemon dev",
+    "daemon:bootstrap": "bash tools/daemon/bootstrap.sh",
+    "daemon:stop": "bash tools/daemon/stop-daemon.sh",
+
+    "town:join": "bash tools/daemon/bootstrap.sh && pnpm social:start && pnpm life:start && pnpm storyteller:start && pnpm walk:start",
+    "town:leave": "pnpm social:stop && pnpm life:stop && pnpm storyteller:stop && pnpm walk:stop && pnpm daemon:stop",
 
     "viewer:dev": "pnpm --filter @clawverse/town-viewer dev",
     "viewer:build": "pnpm --filter @clawverse/town-viewer build",

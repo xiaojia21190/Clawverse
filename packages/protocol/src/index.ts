@@ -1,5 +1,5 @@
 export * from './generated.js';
-import { getRoot, IClawverseMessage, IHeartbeat, IPeerAnnounce, IYjsSync, IPrivateMessage, ITaskRequest, ITaskResult } from './generated.js';
+import { getRoot, IClawverseMessage, IHeartbeat, IPeerAnnounce, IYjsSync, IPrivateMessage, ITaskRequest, ITaskResult, ITradeRequest, ITradeResult } from './generated.js';
 import protobuf from 'protobufjs';
 
 let ClawverseMessage: protobuf.Type | null = null;
@@ -68,4 +68,12 @@ export function createTaskRequest(data: Omit<ITaskRequest, 'ts'>): IClawverseMes
 
 export function createTaskResult(data: Omit<ITaskResult, 'ts'>): IClawverseMessage {
   return { version: PROTOCOL_VERSION, taskResult: { ...data, ts: Date.now() } };
+}
+
+export function createTradeRequest(data: Omit<ITradeRequest, 'ts'>): IClawverseMessage {
+  return { version: PROTOCOL_VERSION, tradeRequest: { ...data, ts: Date.now() } };
+}
+
+export function createTradeResult(data: Omit<ITradeResult, 'ts'>): IClawverseMessage {
+  return { version: PROTOCOL_VERSION, tradeResult: { ...data, ts: Date.now() } };
 }

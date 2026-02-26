@@ -6,7 +6,7 @@ import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
 import { StateStore } from './state.js';
 import { createHttpServer, broadcastStateSse } from './http.js';
-import { createHeartbeat, createYjsSync, createAnnounce, createTaskRequest, createTaskResult } from '@clawverse/protocol';
+import { createHeartbeat, createYjsSync, createAnnounce, createTaskRequest, createTaskResult, createTradeResult } from '@clawverse/protocol';
 import { Mood, ModelTrait } from '@clawverse/types';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { loadSecurityConfig, validateSecurityConfig } from './security.js';
@@ -19,6 +19,7 @@ import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
+import { FactionSystem } from './faction.js';
 import { getDefaultSqlitePath } from './sqlite.js';
 
 const config = loadConfig();
@@ -137,7 +138,8 @@ const events = new EventEngine({ dbPath: sqlitePath });
 const economy = new EconomySystem({ dbPath: sqlitePath });
 const world = new WorldMap({ dbPath: sqlitePath });
 world.attachYjs(stateStore.getBuildingsMap());
-const storyteller = new Storyteller(events, stateStore, social, needs, economy);
+const faction = new FactionSystem(social, economy, events, { dbPath: sqlitePath });
+const storyteller = new Storyteller(events, stateStore, social, needs, economy, faction);
 events.start();
 storyteller.start();
 
@@ -188,6 +190,7 @@ const httpServer = await createHttpServer(config.port, {
   economy,
   world,
   storyteller,
+  faction,
   onSoulUpdate,
 });
 
@@ -280,6 +283,53 @@ network.on('message', (peerId, message) => {
   if (message.taskResult) {
     const tr = message.taskResult;
     collab.onResultReceived(tr.taskId, tr.result, tr.success);
+  }
+
+  if (message.tradeRequest) {
+    const tr = message.tradeRequest;
+    logger.info(`[trade] Received TradeRequest ${tr.tradeId} from ${peerId}: ${tr.amount} ${tr.resource} for ${tr.amountWant} ${tr.resourceWant}`);
+
+    // Auto-evaluate: accept if we can afford it and are in Market or have market_stall
+    const myState = stateStore.getMyState();
+    const myZone = myState ? (function() {
+      const p = myState.position;
+      if (p.x >= 10 && p.x < 20 && p.y < 10) return 'Market';
+      return 'Other';
+    })() : 'Other';
+    const hasMarketStall = world.getMap().buildings.some(
+      b => b.type === 'market_stall' && b.ownerId === myId
+    );
+    const canTrade = myZone === 'Market' || hasMarketStall;
+    const resKey = tr.resourceWant as 'compute' | 'storage' | 'bandwidth' | 'reputation';
+
+    if (canTrade && economy.canAfford(resKey, tr.amountWant)) {
+      economy.createPendingTrade(tr.tradeId, tr.fromPeerId, tr.resource, tr.amount, tr.resourceWant, tr.amountWant);
+      const result = economy.acceptTrade(tr.tradeId);
+      if (result) {
+        const msg = createTradeResult({ tradeId: tr.tradeId, accepted: true, reason: 'Auto-accepted' });
+        network.sendTo(peerId, msg).catch(err => logger.warn(`[trade] Failed to send TradeResult: ${(err as Error).message}`));
+      }
+    } else {
+      const reason = !canTrade ? 'Not in Market zone' : 'Insufficient resources';
+      const msg = createTradeResult({ tradeId: tr.tradeId, accepted: false, reason });
+      network.sendTo(peerId, msg).catch(err => logger.warn(`[trade] Failed to send TradeResult: ${(err as Error).message}`));
+    }
+  }
+
+  if (message.tradeResult) {
+    const tr = message.tradeResult;
+    logger.info(`[trade] TradeResult ${tr.tradeId}: ${tr.accepted ? 'ACCEPTED' : 'REJECTED'} — ${tr.reason}`);
+    if (tr.accepted) {
+      // The initiator now receives the resources they wanted
+      const pendingTrades = economy.getPendingTrades();
+      const pending = pendingTrades.find(t => t.tradeId === tr.tradeId);
+      if (pending) {
+        economy.award(pending.resourceWant as any, pending.amountWant);
+        economy.acceptTrade(tr.tradeId);
+      }
+    } else {
+      economy.rejectTrade(tr.tradeId);
+    }
   }
 });
 
@@ -417,6 +467,7 @@ const shutdown = async () => {
     economy.destroy(),
     world.destroy(),
     collab.destroy(),
+    faction.destroy(),
     episodeLogger?.destroy(),
   ]);
   process.exit(0);

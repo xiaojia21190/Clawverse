@@ -253,3 +253,44 @@ export type TerrainType = 'grass' | 'road' | 'water';
 // =====================
 
 export type StorytellerMode = 'Randy' | 'Cassandra' | 'Phoebe';
+
+// =====================
+// Faction System
+// =====================
+
+export interface Faction {
+  id: string;
+  name: string;
+  founderId: string;
+  members: string[];
+  createdAt: string;
+  motto: string;
+}
+
+export type FactionWarStatus = 'active' | 'ceasefire' | 'ended';
+
+export interface FactionWar {
+  id: string;
+  factionA: string;
+  factionB: string;
+  startedAt: string;
+  endedAt: string | null;
+  status: FactionWarStatus;
+}
+
+// =====================
+// P2P Trade
+// =====================
+
+export type TradeStatus = 'pending' | 'accepted' | 'rejected' | 'expired';
+
+export interface PendingTrade {
+  tradeId: string;
+  fromPeerId: string;
+  resource: string;
+  amount: number;
+  resourceWant: string;
+  amountWant: number;
+  status: TradeStatus;
+  createdAt: string;
+}

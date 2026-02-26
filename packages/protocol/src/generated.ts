@@ -73,6 +73,23 @@ export interface ITaskResult {
   ts: number | Long;
 }
 
+export interface ITradeRequest {
+  tradeId: string;
+  fromPeerId: string;
+  resource: string;
+  amount: number;
+  resourceWant: string;
+  amountWant: number;
+  ts: number | Long;
+}
+
+export interface ITradeResult {
+  tradeId: string;
+  accepted: boolean;
+  reason: string;
+  ts: number | Long;
+}
+
 export interface IClawverseMessage {
   version: number;
   heartbeat?: IHeartbeat;
@@ -81,6 +98,8 @@ export interface IClawverseMessage {
   privateMsg?: IPrivateMessage;
   taskRequest?: ITaskRequest;
   taskResult?: ITaskResult;
+  tradeRequest?: ITradeRequest;
+  tradeResult?: ITradeResult;
 }
 
 export type MessagePayload =
@@ -89,6 +108,8 @@ export type MessagePayload =
   | { type: 'announce'; data: IPeerAnnounce }
   | { type: 'privateMsg'; data: IPrivateMessage }
   | { type: 'taskRequest'; data: ITaskRequest }
-  | { type: 'taskResult'; data: ITaskResult };
+  | { type: 'taskResult'; data: ITaskResult }
+  | { type: 'tradeRequest'; data: ITradeRequest }
+  | { type: 'tradeResult'; data: ITradeResult };
 
 type Long = number;

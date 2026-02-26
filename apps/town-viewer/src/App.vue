@@ -30,7 +30,10 @@
           :my-id="myId ?? null"
           :world-map="worldMap"
           :show-relations="showRelations"
+          :relationships="relationships"
+          :selected-peer-id="selectedPeerId"
           @move="onMove"
+          @select-peer="onSelectPeer"
           class="map-area"
         />
 
@@ -45,6 +48,15 @@
 
       <aside class="side-col">
         <StorytellerFeed :events="lifeEvents" :tension="tension" class="story-feed clay-card" />
+
+        <FactionPanel
+          :factions="factions"
+          :wars="factionWars"
+          @join="joinFaction"
+          @leave="leaveFaction"
+          @peace="declarePeace"
+          class="faction-section clay-card"
+        />
 
         <div class="social-feed-mini clay-card">
           <div class="sfeed-header">Social Pulse</div>
@@ -72,21 +84,27 @@ import StorytellerMode from './components/StorytellerMode.vue';
 import ResourceBar from './components/ResourceBar.vue';
 import PeerInspector from './components/PeerInspector.vue';
 import BuildMenu from './components/BuildMenu.vue';
+import FactionPanel from './components/FactionPanel.vue';
 
 import { usePeers } from './composables/usePeers';
 import { useSocialFeed } from './composables/useSocialFeed';
 import { useEconomy } from './composables/useEconomy';
 import { useWorldMap } from './composables/useWorldMap';
 import { useStoryteller } from './composables/useStoryteller';
+import { useRelationships } from './composables/useRelationships';
+import { useFactions } from './composables/useFactions';
 
 const { peers, connected } = usePeers();
 const { events: socialEvents } = useSocialFeed();
 const { resources } = useEconomy();
 const { worldMap, build } = useWorldMap();
 const { mode: storytellerMode, tension, setMode } = useStoryteller();
+const { relationships } = useRelationships();
+const { factions, wars: factionWars, joinFaction, leaveFaction, declarePeace } = useFactions();
 
 const myId = ref<string | undefined>(undefined);
 const selectedPeer = ref<PeerState | null>(null);
+const selectedPeerId = ref<string | null>(null);
 const showRelations = ref(false);
 const showBuildMenu = ref(false);
 const lifeEvents = ref<FeedEvent[]>([]);
@@ -123,6 +141,15 @@ refreshLifeEvents();
 
 function onMove(_pos: { x: number; y: number }): void {
   // Position updates arrive via SSE.
+}
+
+function onSelectPeer(peerId: string | null): void {
+  selectedPeerId.value = peerId;
+  if (peerId) {
+    selectedPeer.value = peers.value.get(peerId) ?? null;
+  } else {
+    selectedPeer.value = null;
+  }
 }
 
 async function onBuild(type: string): Promise<void> {
@@ -299,7 +326,7 @@ async function onSetMode(mode: string): Promise<void> {
 .side-col {
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 14px;
   animation-delay: 120ms;
 }
@@ -313,10 +340,16 @@ async function onSetMode(mode: string): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 170px;
-  max-height: 238px;
+  min-height: 140px;
+  max-height: 200px;
   overflow-y: auto;
   padding: 14px;
+}
+
+.faction-section {
+  min-height: 120px;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .sfeed-header {

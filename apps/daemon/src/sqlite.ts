@@ -127,6 +127,41 @@ function initSchema(db: DatabaseSync): void {
       ON evolution_episodes(variant);
     CREATE INDEX IF NOT EXISTS idx_evolution_episodes_ts
       ON evolution_episodes(ts);
+
+    CREATE TABLE IF NOT EXISTS factions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      founder_id TEXT NOT NULL,
+      motto TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS faction_members (
+      peer_id TEXT PRIMARY KEY,
+      faction_id TEXT NOT NULL,
+      joined_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS faction_wars (
+      id TEXT PRIMARY KEY,
+      faction_a TEXT NOT NULL,
+      faction_b TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+
+    CREATE TABLE IF NOT EXISTS pending_trades (
+      trade_id TEXT PRIMARY KEY,
+      from_peer_id TEXT NOT NULL,
+      resource TEXT NOT NULL,
+      amount REAL NOT NULL,
+      resource_want TEXT NOT NULL,
+      amount_want REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    );
   `);
 }
 

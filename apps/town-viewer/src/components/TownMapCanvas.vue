@@ -22,15 +22,21 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { PeerState } from '../composables/usePeers';
 import type { WorldMapData } from '../composables/useWorldMap';
+import type { RelationshipInfo } from '../composables/useRelationships';
 
 const props = defineProps<{
   peers: Map<string, PeerState>;
   myId: string | null;
   worldMap: WorldMapData | null;
   showRelations?: boolean;
+  relationships?: RelationshipInfo[];
+  selectedPeerId?: string | null;
 }>();
 
-const emit = defineEmits<{ move: [{ x: number; y: number }] }>();
+const emit = defineEmits<{
+  move: [{ x: number; y: number }];
+  selectPeer: [string | null];
+}>();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const wrapperRef = ref<HTMLDivElement | null>(null);
@@ -39,6 +45,12 @@ const tooltipStyle = ref('');
 const moveError = ref('');
 
 const GRID = 40;
+const MOVE_DURATION = 200; // ms
+
+// Animation state
+const prevPositions = new Map<string, { x: number; y: number; startTime: number; fromX: number; fromY: number }>();
+let animFrameId: number | null = null;
+let animStartTime = 0;
 
 const ZONE_COLORS: Record<string, string> = {
   Plaza: '#fce8ef',
@@ -80,10 +92,19 @@ const MOOD_COLORS: Record<string, string> = {
   sleeping: '#8ea4d8',
 };
 
+const MOOD_ICONS: Record<string, string> = {
+  idle: '\u{1F634}',
+  working: '\u2699',
+  busy: '\u{1F525}',
+  stressed: '\u26A0',
+  distressed: '\u{1F480}',
+  sleeping: '\u{1F4A4}',
+};
+
 const RELATION_COLORS: Record<string, string> = {
   ally: '#10c9a8',
   friend: '#3abff8',
-  stranger: '#94a2c6',
+  acquaintance: '#94a2c6',
   nemesis: '#ef476f',
   rival: '#ff9f1c',
 };
@@ -104,7 +125,35 @@ function zoneName(x: number, y: number): string {
   return 'Residential';
 }
 
-function draw(): void {
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * Math.min(1, Math.max(0, t));
+}
+
+function getAnimatedPos(peerId: string, targetX: number, targetY: number, now: number): { x: number; y: number } {
+  const prev = prevPositions.get(peerId);
+  if (!prev) {
+    prevPositions.set(peerId, { x: targetX, y: targetY, startTime: now, fromX: targetX, fromY: targetY });
+    return { x: targetX, y: targetY };
+  }
+
+  if (prev.x !== targetX || prev.y !== targetY) {
+    prev.fromX = prev.x;
+    prev.fromY = prev.y;
+    prev.startTime = now;
+    prev.x = targetX;
+    prev.y = targetY;
+  }
+
+  const elapsed = now - prev.startTime;
+  const t = Math.min(1, elapsed / MOVE_DURATION);
+  const eased = t * (2 - t); // easeOutQuad
+  return {
+    x: lerp(prev.fromX, targetX, eased),
+    y: lerp(prev.fromY, targetY, eased),
+  };
+}
+
+function draw(now: number): void {
   const canvas = canvasRef.value;
   if (!canvas) return;
 
@@ -114,6 +163,7 @@ function draw(): void {
   const cs = getCellSize();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // Terrain + zones
   const terrain = props.worldMap?.terrain ?? [];
   for (let y = 0; y < GRID; y++) {
     for (let x = 0; x < GRID; x++) {
@@ -126,6 +176,7 @@ function draw(): void {
     }
   }
 
+  // Grid lines
   ctx.strokeStyle = 'rgba(107, 130, 174, 0.2)';
   ctx.lineWidth = 0.5;
   for (let i = 0; i <= GRID; i++) {
@@ -133,13 +184,13 @@ function draw(): void {
     ctx.moveTo(i * cs, 0);
     ctx.lineTo(i * cs, GRID * cs);
     ctx.stroke();
-
     ctx.beginPath();
     ctx.moveTo(0, i * cs);
     ctx.lineTo(GRID * cs, i * cs);
     ctx.stroke();
   }
 
+  // Zone borders
   ctx.strokeStyle = '#9bb0d8';
   ctx.lineWidth = 1.5;
   for (const bx of [10, 20]) {
@@ -155,6 +206,7 @@ function draw(): void {
     ctx.stroke();
   }
 
+  // Zone labels
   ctx.font = '10px "Manrope", sans-serif';
   ctx.fillStyle = '#6a7ea9';
   ctx.textAlign = 'left';
@@ -171,18 +223,16 @@ function draw(): void {
     ctx.fillText(label.name, label.x * cs + 2, label.y * cs + 2);
   }
 
+  // Buildings
   const buildings = props.worldMap?.buildings ?? [];
   for (const b of buildings) {
     const bx = b.position.x * cs;
     const by = b.position.y * cs;
-
     ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
     ctx.fillRect(bx + 1, by + 1, cs - 2, cs - 2);
-
     ctx.strokeStyle = '#7f97cb';
     ctx.lineWidth = 1;
     ctx.strokeRect(bx + 1, by + 1, cs - 2, cs - 2);
-
     if (cs >= 12) {
       ctx.font = `${Math.max(8, cs - 6)}px "Manrope", sans-serif`;
       ctx.textAlign = 'center';
@@ -192,39 +242,61 @@ function draw(): void {
     }
   }
 
+  // Relationship lines (real tier colors)
   if (props.showRelations) {
     ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.28;
+    ctx.globalAlpha = 0.35;
     const peerList = Array.from(props.peers.values());
+    const relMap = new Map<string, string>();
+    if (props.relationships) {
+      for (const r of props.relationships) {
+        relMap.set(r.peerId, r.tier);
+      }
+    }
+
     for (let i = 0; i < peerList.length; i++) {
       for (let j = i + 1; j < peerList.length; j++) {
         const a = peerList[i];
         const b = peerList[j];
-        ctx.strokeStyle = RELATION_COLORS.friend;
+        const tier = relMap.get(b.id) ?? relMap.get(a.id) ?? 'stranger';
+        if (tier === 'stranger') continue;
+
+        const color = RELATION_COLORS[tier] ?? '#94a2c6';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = tier === 'ally' ? 2 : tier === 'nemesis' ? 2 : 1;
+
+        const aPos = getAnimatedPos(a.id, a.position.x, a.position.y, now);
+        const bPos = getAnimatedPos(b.id, b.position.x, b.position.y, now);
         ctx.beginPath();
-        ctx.moveTo(a.position.x * cs + cs / 2, a.position.y * cs + cs / 2);
-        ctx.lineTo(b.position.x * cs + cs / 2, b.position.y * cs + cs / 2);
+        ctx.moveTo(aPos.x * cs + cs / 2, aPos.y * cs + cs / 2);
+        ctx.lineTo(bPos.x * cs + cs / 2, bPos.y * cs + cs / 2);
         ctx.stroke();
       }
     }
     ctx.globalAlpha = 1;
   }
 
+  // Peers with animation
   for (const peer of props.peers.values()) {
-    const px = peer.position.x * cs + cs / 2;
-    const py = peer.position.y * cs + cs / 2;
+    const animPos = getAnimatedPos(peer.id, peer.position.x, peer.position.y, now);
+    const px = animPos.x * cs + cs / 2;
+    const py = animPos.y * cs + cs / 2;
     const r = Math.max(4, cs / 2 - 2);
     const isMe = peer.id === props.myId;
+    const isSelected = peer.id === props.selectedPeerId;
 
+    // Peer circle
     ctx.beginPath();
     ctx.arc(px, py, r, 0, Math.PI * 2);
     ctx.fillStyle = peer.dna?.appearance?.primaryColor ?? MOOD_COLORS[peer.mood] ?? '#8ea4d8';
     ctx.fill();
 
+    // Mood ring
     ctx.strokeStyle = MOOD_COLORS[peer.mood] ?? '#8ea4d8';
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    // My indicator
     if (isMe) {
       ctx.beginPath();
       ctx.arc(px, py, r + 3, 0, Math.PI * 2);
@@ -233,6 +305,26 @@ function draw(): void {
       ctx.stroke();
     }
 
+    // Selected: breathing halo
+    if (isSelected) {
+      const pulse = Math.sin(now * 0.003) * 2;
+      const haloR = r + 5 + pulse;
+      const alpha = 0.3 + Math.sin(now * 0.004) * 0.15;
+      ctx.beginPath();
+      ctx.arc(px, py, haloR, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(16, 201, 168, ${alpha})`;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Inner glow
+      ctx.beginPath();
+      ctx.arc(px, py, haloR + 2, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(16, 201, 168, ${alpha * 0.4})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Archetype letter
     if (cs >= 16) {
       ctx.font = `${Math.max(7, cs - 10)}px "Manrope", sans-serif`;
       ctx.textAlign = 'center';
@@ -241,6 +333,7 @@ function draw(): void {
       ctx.fillText(ARCHETYPE_MARKERS[peer.dna?.archetype ?? ''] ?? 'P', px, py);
     }
 
+    // Name label
     if (cs >= 20) {
       ctx.font = '9px "Manrope", sans-serif';
       ctx.textAlign = 'center';
@@ -248,7 +341,24 @@ function draw(): void {
       ctx.fillStyle = '#25314d';
       ctx.fillText(peer.name.slice(0, 10), px, py + r + 3);
     }
+
+    // Mood icon overlay
+    if (cs >= 16) {
+      const icon = MOOD_ICONS[peer.mood];
+      if (icon) {
+        ctx.font = `${Math.max(8, cs * 0.35)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(icon, px, py - r - 1);
+      }
+    }
   }
+}
+
+function animLoop(timestamp: number): void {
+  if (!animStartTime) animStartTime = timestamp;
+  draw(timestamp);
+  animFrameId = requestAnimationFrame(animLoop);
 }
 
 function resize(): void {
@@ -259,7 +369,6 @@ function resize(): void {
   const size = Math.min(wrapper.clientWidth, wrapper.clientHeight, 800);
   canvas.width = size;
   canvas.height = size;
-  draw();
 }
 
 function onMouseMove(e: MouseEvent): void {
@@ -281,7 +390,7 @@ function onMouseMove(e: MouseEvent): void {
 
 async function onCanvasClick(e: MouseEvent): Promise<void> {
   const canvas = canvasRef.value;
-  if (!canvas || !props.myId) return;
+  if (!canvas) return;
 
   const rect = canvas.getBoundingClientRect();
   const cs = getCellSize();
@@ -289,6 +398,17 @@ async function onCanvasClick(e: MouseEvent): Promise<void> {
   const y = Math.floor((e.clientY - rect.top) / cs);
   if (x < 0 || x >= GRID || y < 0 || y >= GRID) return;
 
+  // Check if clicking on a peer
+  const clickedPeer = Array.from(props.peers.values()).find(
+    p => p.position.x === x && p.position.y === y
+  );
+  if (clickedPeer) {
+    emit('selectPeer', clickedPeer.id);
+    return;
+  }
+
+  // Otherwise, move
+  if (!props.myId) return;
   moveError.value = '';
   try {
     const res = await fetch('/move', {
@@ -301,20 +421,20 @@ async function onCanvasClick(e: MouseEvent): Promise<void> {
   } catch (err) {
     moveError.value = `Move error: ${(err as Error).message}`;
   } finally {
-    setTimeout(() => {
-      moveError.value = '';
-    }, 2200);
+    setTimeout(() => { moveError.value = ''; }, 2200);
   }
 }
-
-watch([() => props.peers, () => props.worldMap, () => props.showRelations], draw, { deep: true });
 
 const ro = new ResizeObserver(resize);
 onMounted(() => {
   if (wrapperRef.value) ro.observe(wrapperRef.value);
   resize();
+  animFrameId = requestAnimationFrame(animLoop);
 });
-onUnmounted(() => ro.disconnect());
+onUnmounted(() => {
+  ro.disconnect();
+  if (animFrameId !== null) cancelAnimationFrame(animFrameId);
+});
 </script>
 
 <style scoped>
