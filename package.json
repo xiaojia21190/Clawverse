@@ -15,8 +15,8 @@
     "daemon:bootstrap": "bash tools/daemon/bootstrap.sh",
     "daemon:stop": "bash tools/daemon/stop-daemon.sh",
 
-    "town:join": "bash tools/daemon/bootstrap.sh && pnpm social:start && pnpm life:start && pnpm storyteller:start && pnpm walk:start",
-    "town:leave": "pnpm social:stop && pnpm life:stop && pnpm storyteller:stop && pnpm walk:stop && pnpm daemon:stop",
+    "town:join": "bash tools/daemon/bootstrap.sh && pnpm soul:start && pnpm social:start && pnpm collab:start && pnpm life:start && pnpm storyteller:start && pnpm walk:start",
+    "town:leave": "pnpm social:stop && pnpm collab:stop && pnpm life:stop && pnpm storyteller:stop && pnpm walk:stop && pnpm daemon:stop",
 
     "viewer:dev": "pnpm --filter @clawverse/town-viewer dev",
     "viewer:build": "pnpm --filter @clawverse/town-viewer build",
@@ -28,6 +28,11 @@
     "social:stop": "bash tools/social/stop-worker.sh",
 
     "soul:worker": "pnpm --filter @clawverse/connector-skill soul",
+    "soul:start": "bash tools/soul/start-soul-worker.sh",
+
+    "collab:worker": "pnpm --filter @clawverse/connector-skill collab",
+    "collab:start": "bash tools/collab/start-collab-worker.sh",
+    "collab:stop": "bash tools/collab/stop-collab-worker.sh",
 
     "walk:worker": "pnpm --filter @clawverse/connector-skill walk",
     "walk:start": "bash tools/walk/start-walk-worker.sh",
