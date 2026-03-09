@@ -45,22 +45,22 @@ const modes = ['Randy', 'Cassandra', 'Phoebe'];
   font-size: 0.72rem;
   font-weight: 700;
   cursor: pointer;
-  background: linear-gradient(145deg, #ffffff, var(--surface-soft));
-  box-shadow: var(--shadow-clay-soft);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
   transition: transform 160ms var(--ease-snap), color 160ms var(--ease-snap), box-shadow 160ms var(--ease-snap);
 }
 
 .mode-btn:hover {
   transform: translateY(-1px);
-  color: var(--accent-coral);
+  color: var(--accent-sky);
   box-shadow: var(--shadow-float);
 }
 
 .mode-btn.active {
   color: var(--text-strong);
-  border-color: rgba(58, 191, 248, 0.45);
-  background: linear-gradient(145deg, rgba(58, 191, 248, 0.24), rgba(16, 201, 168, 0.2));
-  box-shadow: var(--shadow-pressed);
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.14);
 }
 
 .tension-label {
@@ -68,12 +68,12 @@ const modes = ['Randy', 'Cassandra', 'Phoebe'];
   padding: 5px 10px;
   border-radius: 999px;
   color: var(--text-muted);
-  background: linear-gradient(145deg, #ffffff, var(--surface-soft));
-  box-shadow: var(--shadow-pressed);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .tension-label strong {
-  color: var(--state-warn);
+  color: var(--accent-sun);
 }
 
 @media (max-width: 760px) {

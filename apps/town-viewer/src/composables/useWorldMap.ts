@@ -5,6 +5,7 @@ export interface Building {
   type: string;
   position: { x: number; y: number };
   ownerId: string;
+  ownerActorId?: string;
   ownerName: string;
   effect: string;
   createdAt: string;

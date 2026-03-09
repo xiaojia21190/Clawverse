@@ -76,12 +76,35 @@ export interface DNA {
 
 export interface PeerState {
   id: string;
+  actorId?: string;
+  sessionId?: string;
+  spawnDistrict?: string;
   name: string;
   position: Position;
   mood: Mood;
   hardware: HardwareMetrics;
   dna: DNA;
   lastUpdate: Date;
+  market?: MarketProfile;
+}
+
+export interface MarketResourceHints {
+  compute?: number;
+  storage?: number;
+  bandwidth?: number;
+  reputation?: number;
+}
+
+export interface MarketInventoryHints {
+  dataShard?: number;
+  alloyFrame?: number;
+  relayPatch?: number;
+}
+
+export interface MarketProfile {
+  resources?: MarketResourceHints;
+  inventory?: MarketInventoryHints;
+  updatedAt?: string;
 }
 
 // =====================
@@ -103,6 +126,23 @@ export interface EvolutionRuntimeConfig {
   variant: string;
   flushEvery: number;
   heartbeatSampleEvery: number;
+  autopilot: {
+    enabled: boolean;
+    intervalMs: number;
+    minEpisodeDelta: number;
+  };
+  cooldowns: {
+    globalMs: number;
+    stepMs: {
+      propose: number;
+      evaluate: number;
+      decide: number;
+      healthCheck: number;
+      applyRollout: number;
+      cycle: number;
+      initRollout: number;
+    };
+  };
 }
 
 export interface DaemonConfig {
@@ -123,6 +163,23 @@ export const DEFAULT_CONFIG: DaemonConfig = {
     variant: 'baseline-v1',
     flushEvery: 1,
     heartbeatSampleEvery: 10,
+    autopilot: {
+      enabled: true,
+      intervalMs: 60_000,
+      minEpisodeDelta: 10,
+    },
+    cooldowns: {
+      globalMs: 30_000,
+      stepMs: {
+        propose: 60_000,
+        evaluate: 60_000,
+        decide: 60_000,
+        healthCheck: 60_000,
+        applyRollout: 90_000,
+        cycle: 300_000,
+        initRollout: 300_000,
+      },
+    },
   },
 };
 
@@ -135,6 +192,7 @@ export interface VolatileState {
   cpuUsage: number;
   ramUsage: number;
   lastHeartbeat: number; // timestamp ms
+  market?: MarketProfile;
 }
 
 // =====================
@@ -148,7 +206,11 @@ export interface SocialEvent {
   ts: string;
   trigger: SocialTrigger;
   from: string;
+  fromActorId?: string;
+  fromSessionId?: string;
   to: string;
+  toActorId?: string;
+  toSessionId?: string;
   fromName: string;
   toName: string;
   location: string;
@@ -161,6 +223,9 @@ export type RelationshipTier = 'nemesis' | 'rival' | 'stranger' | 'acquaintance'
 
 export interface SocialRelationship {
   peerId: string;
+  actorId?: string;
+  sessionId?: string;
+  peerIds?: string[];
   meetCount: number;
   sentiment: number; // -1 to 1
   lastMet: string;   // ISO string
@@ -181,10 +246,10 @@ export interface LlmConfig {
 // =====================
 
 export interface Resources {
-  compute: number;      // ⚡
-  storage: number;      // 💾
-  bandwidth: number;    // 🌐
-  reputation: number;   // 🪙
+  compute: number;      // 閳?
+  storage: number;      // 棣冩崙
+  bandwidth: number;    // 棣冨
+  reputation: number;   // 棣冪崸
 }
 
 export interface Relationship {
@@ -203,13 +268,13 @@ export interface Relationship {
 // =====================
 
 export type LocationType =
-  | 'plaza'       // 🏛️ Spawn point
-  | 'market'      // 🏪 Trading
-  | 'library'     // 📚 Scholars gather
-  | 'workshop'    // 🏭 Warriors/Artisans
-  | 'park'        // 🌳 Idle/casual
-  | 'tavern'      // 🍺 Social hub
-  | 'residential'; // 🏠 Offline nodes
+  | 'plaza'       // 棣冨綄閿?Spawn point
+  | 'market'      // 棣冨涧 Trading
+  | 'library'     // 棣冩憥 Scholars gather
+  | 'workshop'    // 棣冨疆 Warriors/Artisans
+  | 'park'        // 棣冨唉 Idle/casual
+  | 'tavern'      // 棣冨祽 Social hub
+  | 'residential'; // 棣冨綌 Offline nodes
 
 export interface Location {
   type: LocationType;
@@ -226,7 +291,7 @@ export interface ResourceState {
   compute: number;     // 0-200
   storage: number;     // 0-200
   bandwidth: number;   // 0-200
-  reputation: number;  // 0-∞
+  reputation: number;  // 0-閳?
   updatedAt: string;
 }
 
@@ -234,19 +299,98 @@ export interface ResourceState {
 // World Map
 // =====================
 
-export type BuildingType = 'forge' | 'archive' | 'beacon' | 'market_stall' | 'shelter';
+export type BuildingType = 'forge' | 'archive' | 'beacon' | 'market_stall' | 'shelter' | 'watchtower';
 
 export interface Building {
   id: string;
   type: BuildingType;
   position: Position;
   ownerId: string;
+  ownerActorId?: string;
   ownerName: string;
   effect: string;
   createdAt: string;
 }
 
 export type TerrainType = 'grass' | 'road' | 'water';
+
+export type InventoryItemId = 'data_shard' | 'alloy_frame' | 'relay_patch';
+
+export interface InventoryItemState {
+  itemId: InventoryItemId;
+  amount: number;
+  updatedAt: string;
+}
+
+export interface ProductionRecipeInput {
+  resources?: Partial<Omit<ResourceState, 'updatedAt'>>;
+  items?: Partial<Record<InventoryItemId, number>>;
+}
+
+export interface ProductionRecipe {
+  id: InventoryItemId;
+  name: string;
+  description: string;
+  requiredBuilding: BuildingType | null;
+  inputs: ProductionRecipeInput;
+  output: {
+    itemId: InventoryItemId;
+    amount: number;
+  };
+}
+
+export type HealthStatus = 'stable' | 'injured' | 'critical' | 'downed' | 'dead';
+export type CombatSeverity = 'low' | 'medium' | 'high' | 'fatal';
+export type DefensePosture = 'steady' | 'guarded' | 'fortified';
+
+export interface InjuryState {
+  id: string;
+  label: string;
+  severity: CombatSeverity;
+  source: string;
+  createdAt: string;
+  healedAt: string | null;
+  active: boolean;
+  complication: 'untreated' | 'chronic_pain' | null;
+}
+
+export interface RaidState {
+  id: string;
+  source: string;
+  severity: CombatSeverity;
+  objective: string;
+  recommendedPosture: DefensePosture;
+  countermeasure: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  active: boolean;
+  summary: string;
+}
+
+export interface CombatState {
+  hp: number;
+  maxHp: number;
+  pain: number;
+  chronicPain: number;
+  careDebt: number;
+  posture: DefensePosture;
+  status: HealthStatus;
+  raidRisk: number;
+  activeRaid: RaidState | null;
+  injuries: InjuryState[];
+  deaths: number;
+  updatedAt: string;
+  lastRaidAt: string | null;
+  lastDamageAt: string | null;
+}
+
+export interface CombatLogEntry {
+  id: string;
+  ts: string;
+  kind: 'raid' | 'combat' | 'injury' | 'recovery' | 'death';
+  summary: string;
+  payload: Record<string, unknown>;
+}
 
 // =====================
 // Storyteller
@@ -258,13 +402,32 @@ export type StorytellerMode = 'Randy' | 'Cassandra' | 'Phoebe';
 // Faction System
 // =====================
 
+export type FactionAgenda = 'expansion' | 'trade' | 'knowledge' | 'stability' | 'survival';
+export type FactionStage = 'fragile' | 'rising' | 'dominant' | 'splintering';
+
+export interface FactionStrategicState {
+  agenda: FactionAgenda;
+  prosperity: number;
+  cohesion: number;
+  influence: number;
+  pressure: number;
+  stage: FactionStage;
+  lastUpdatedAt: string;
+}
+
+export interface FactionTreasury extends ResourceState {}
+
 export interface Faction {
   id: string;
   name: string;
   founderId: string;
+  founderActorId?: string;
   members: string[];
+  memberActorIds?: string[];
   createdAt: string;
   motto: string;
+  strategic: FactionStrategicState;
+  treasury?: FactionTreasury;
 }
 
 export type FactionWarStatus = 'active' | 'ceasefire' | 'ended';
@@ -276,6 +439,42 @@ export interface FactionWar {
   startedAt: string;
   endedAt: string | null;
   status: FactionWarStatus;
+}
+
+export type FactionAllianceStatus = 'active' | 'ended';
+
+export interface FactionAlliance {
+  id: string;
+  factionA: string;
+  factionB: string;
+  formedAt: string;
+  expiresAt: string;
+  lastRenewedAt: string | null;
+  endedAt: string | null;
+  status: FactionAllianceStatus;
+}
+
+export type FactionVassalageStatus = 'active' | 'ended';
+
+export interface FactionVassalage {
+  id: string;
+  overlordId: string;
+  vassalId: string;
+  formedAt: string;
+  endedAt: string | null;
+  status: FactionVassalageStatus;
+}
+
+export type FactionTributeResource = 'compute' | 'storage' | 'bandwidth' | 'reputation';
+
+export interface FactionTribute {
+  id: string;
+  vassalageId: string;
+  overlordId: string;
+  vassalId: string;
+  resource: FactionTributeResource;
+  amount: number;
+  collectedAt: string;
 }
 
 // =====================

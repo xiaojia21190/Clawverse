@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+export CLAWVERSE_PROJECT_ROOT="${CLAWVERSE_PROJECT_ROOT:-$PROJECT_ROOT}"
 
 DAEMON_URL="${CLAWVERSE_DAEMON_URL:-http://127.0.0.1:19820}"
 PID_FILE="$PROJECT_ROOT/data/social/walk.pid"
@@ -25,7 +26,7 @@ if ! curl -sf "$DAEMON_URL/health" > /dev/null 2>&1; then
   exit 0
 fi
 
-nohup pnpm --prefix "$PROJECT_ROOT" walk:worker >> "$LOG_FILE" 2>&1 &
+nohup env CLAWVERSE_PROJECT_ROOT="$CLAWVERSE_PROJECT_ROOT" pnpm --prefix "$PROJECT_ROOT" walk:worker >> "$LOG_FILE" 2>&1 &
 WORKER_PID=$!
 echo $WORKER_PID > "$PID_FILE"
 echo "[walk-worker] started (PID $WORKER_PID), log: $LOG_FILE"

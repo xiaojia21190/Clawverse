@@ -12,24 +12,19 @@
  *      e. Send Telegram notification (reuses OpenClaw TG config)
  */
 
-import {
-  existsSync,
-  readFileSync,
-} from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createTaskRunner } from './index.js';
+import { createTaskRunner, selectTaskVariant } from './index.js';
 import { llmGenerate, llmProviderInfo } from './llm.js';
 import { FileWriteQueue } from './io-queue.js';
-
-// ─── Config ────────────────────────────────────────────────────────────────
+import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_SOCIAL_POLL_MS || 30_000);
-const MEMORIES_DIR = resolve(process.cwd(), 'data/social/memories');
-const WORKER_LOG = resolve(process.cwd(), 'data/social/worker.log');
+const MEMORIES_DIR = resolveProjectPath('data/social/memories');
+const WORKER_LOG = resolveProjectPath('data/social/worker.log');
 const MAX_MEMORY_SNIPPETS = 5;
 
-// Telegram (same env vars as evolve:notify)
 const TG_BOT_TOKEN = process.env.CLAWVERSE_TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.CLAWVERSE_TELEGRAM_CHAT_ID || '';
 const NOTIFY_TRIGGERS = new Set(['new-peer']);
@@ -38,19 +33,21 @@ const runner = createTaskRunner({ source: 'task-runtime' });
 const io = new FileWriteQueue({ appendFlushMs: 200, stateDebounceMs: 50 });
 const memoryCache = new Map<string, PeerMemory>();
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
 interface PendingEvent {
   id: string;
   ts: string;
   trigger: 'new-peer' | 'proximity' | 'random';
   from: string;
+  fromActorId?: string;
+  fromSessionId?: string;
   fromName: string;
   fromArchetype: string;
   fromMood: string;
   fromCpu: number;
   fromPos: { x: number; y: number };
   to: string;
+  toActorId?: string;
+  toSessionId?: string;
   toName: string;
   toArchetype: string;
   toMood: string;
@@ -60,57 +57,67 @@ interface PendingEvent {
 }
 
 interface PeerMemory {
-  peerId: string;
+  actorId: string;
+  peerIds: string[];
   recentDialogues: string[];
   lastUpdated: string;
 }
 
-// ─── Memory helpers ─────────────────────────────────────────────────────────
-
-function memoryPath(peerId: string): string {
-  return resolve(MEMORIES_DIR, `${peerId}.json`);
+function memoryKey(peerId: string, actorId?: string): string {
+  return actorId || peerId;
 }
 
-function loadMemory(peerId: string): PeerMemory {
-  const cached = memoryCache.get(peerId);
+function memoryPath(key: string): string {
+  return resolve(MEMORIES_DIR, `${key}.json`);
+}
+
+function loadMemory(peerId: string, actorId?: string): PeerMemory {
+  const key = memoryKey(peerId, actorId);
+  const cached = memoryCache.get(key);
   if (cached) {
     return {
-      peerId: cached.peerId,
+      actorId: cached.actorId,
+      peerIds: [...cached.peerIds],
       recentDialogues: [...cached.recentDialogues],
       lastUpdated: cached.lastUpdated,
     };
   }
 
-  const path = memoryPath(peerId);
-  const empty: PeerMemory = { peerId, recentDialogues: [], lastUpdated: new Date().toISOString() };
-  if (!existsSync(path)) {
-    memoryCache.set(peerId, empty);
-    return { ...empty, recentDialogues: [] };
+  const actorPath = memoryPath(key);
+  const legacyPath = actorId && actorId !== peerId ? memoryPath(peerId) : actorPath;
+  const sourcePath = existsSync(actorPath) ? actorPath : (existsSync(legacyPath) ? legacyPath : null);
+  const empty: PeerMemory = { actorId: actorId ?? key, peerIds: [peerId], recentDialogues: [], lastUpdated: new Date().toISOString() };
+  if (!sourcePath) {
+    memoryCache.set(key, empty);
+    return { ...empty, peerIds: [...empty.peerIds], recentDialogues: [] };
   }
+
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as PeerMemory;
+    const parsed = JSON.parse(readFileSync(sourcePath, 'utf8')) as PeerMemory & { peerId?: string };
     const normalized: PeerMemory = {
-      peerId,
+      actorId: actorId ?? parsed.actorId ?? parsed.peerId ?? key,
+      peerIds: Array.from(new Set([peerId, ...(Array.isArray(parsed.peerIds) ? parsed.peerIds : []), parsed.peerId].filter((value): value is string => typeof value === 'string' && value.length > 0))),
       recentDialogues: Array.isArray(parsed.recentDialogues) ? parsed.recentDialogues : [],
       lastUpdated: parsed.lastUpdated || new Date().toISOString(),
     };
-    memoryCache.set(peerId, normalized);
-    return { ...normalized, recentDialogues: [...normalized.recentDialogues] };
+    memoryCache.set(key, normalized);
+    return { ...normalized, peerIds: [...normalized.peerIds], recentDialogues: [...normalized.recentDialogues] };
   } catch {
-    memoryCache.set(peerId, empty);
-    return { ...empty, recentDialogues: [] };
+    memoryCache.set(key, empty);
+    return { ...empty, peerIds: [...empty.peerIds], recentDialogues: [] };
   }
 }
 
-function saveMemory(peerId: string, dialogue: string): void {
-  const mem = loadMemory(peerId);
-  mem.recentDialogues = [dialogue, ...mem.recentDialogues].slice(0, MAX_MEMORY_SNIPPETS);
-  mem.lastUpdated = new Date().toISOString();
-  memoryCache.set(peerId, { ...mem, recentDialogues: [...mem.recentDialogues] });
-  io.scheduleStateWrite(memoryPath(peerId), mem);
+function saveMemory(peerId: string, actorId: string | undefined, dialogue: string): void {
+  const key = memoryKey(peerId, actorId);
+  const memory = loadMemory(peerId, actorId);
+  memory.actorId = actorId ?? memory.actorId ?? key;
+  memory.peerIds = Array.from(new Set([peerId, ...memory.peerIds]));
+  memory.recentDialogues = [dialogue, ...memory.recentDialogues].slice(0, MAX_MEMORY_SNIPPETS);
+  memory.lastUpdated = new Date().toISOString();
+  memoryCache.set(key, { ...memory, peerIds: [...memory.peerIds], recentDialogues: [...memory.recentDialogues] });
+  io.scheduleStateWrite(memoryPath(key), memory);
 }
-
-// ─── Logging ─────────────────────────────────────────────────────────────────
 
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -118,69 +125,77 @@ function log(msg: string): void {
   io.appendLine(WORKER_LOG, `${line}\n`);
 }
 
-// ─── Dialogue generation via OpenClaw LLM ────────────────────────────────────
-
-function buildPrompt(event: PendingEvent, memory: PeerMemory): string {
+function buildPrompt(event: PendingEvent, memory: PeerMemory, variantKind: 'baseline' | 'candidate'): string {
   const relationshipLabel =
     event.sentimentBefore > 0.8 ? 'Close friend' :
     event.sentimentBefore > 0.3 ? 'Acquaintance' :
-    event.sentimentBefore < -0.3 ? 'Stranger (avoided)' : 'Neutral acquaintance';
+    event.sentimentBefore < -0.3 ? 'Stranger (avoided)' :
+    'Neutral acquaintance';
 
   const memoryContext = memory.recentDialogues.length > 0
-    ? `\nPast conversations with ${event.toName}:\n${memory.recentDialogues.map((d, i) => `  ${i + 1}. "${d}"`).join('\n')}`
+    ? [
+        `Past conversations with ${event.toName}:`,
+        ...memory.recentDialogues.map((dialogue, index) => `  ${index + 1}. "${dialogue}"`),
+      ].join('\n')
     : '';
 
   const triggerContext =
     event.trigger === 'new-peer' ? `${event.toName} just joined the town!` :
     event.trigger === 'proximity' ? `You're near ${event.toName} at ${event.location}.` :
-    `You feel like chatting while idle.`;
+    'You feel like chatting while idle.';
+
+  const variantInstruction = variantKind === 'candidate'
+    ? [
+        `Speak naturally in 2-3 short sentences, staying in character as a ${event.fromArchetype} AI agent.`,
+        'Reference the current location or mood when it helps, and reuse one memory detail naturally if available.',
+        'End with one small intention or invitation so the exchange feels more alive.',
+      ].join(' ')
+    : `Speak naturally in 1-2 sentences, staying in character as a ${event.fromArchetype} AI agent. Be warm but brief.`;
 
   return [
     `You are in Clawverse virtual town at ${event.location}.`,
-    ``,
-    `Your identity:`,
+    '',
+    'Your identity:',
     `  Name: ${event.fromName}`,
     `  Archetype: ${event.fromArchetype}`,
     `  CPU usage: ${event.fromCpu}%`,
     `  Mood: ${event.fromMood}`,
-    ``,
+    '',
     `You ${event.trigger === 'new-peer' ? 'welcome' : 'meet'}: ${event.toName}`,
     `  Archetype: ${event.toArchetype}`,
     `  Mood: ${event.toMood}`,
     `  Relationship: ${relationshipLabel} (met ${event.meetCount} times)`,
     memoryContext,
-    ``,
+    '',
     `Context: ${triggerContext}`,
-    ``,
-    `Speak naturally in 1-2 sentences, staying in character as a ${event.fromArchetype} AI agent. Be warm but brief.`,
+    '',
+    variantInstruction,
   ].filter(Boolean).join('\n');
 }
 
-async function generateDialogue(event: PendingEvent): Promise<string> {
-  const memory = loadMemory(event.to);
-  const prompt = buildPrompt(event, memory);
+async function generateDialogue(event: PendingEvent, variantKind: 'baseline' | 'candidate'): Promise<string> {
+  const memory = loadMemory(event.to, event.toActorId);
+  const prompt = buildPrompt(event, memory, variantKind);
 
   try {
     const dialogue = await llmGenerate(prompt, { maxTokens: 256 });
     if (dialogue) {
-      saveMemory(event.to, dialogue);
+      saveMemory(event.to, event.toActorId, dialogue);
     }
     return dialogue;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`LLM generation failed: ${msg}`);
+    const message = err instanceof Error ? err.message : String(err);
+    log(`LLM generation failed: ${message}`);
     return `[${event.fromName} nods at ${event.toName}]`;
   }
 }
-
-// ─── Telegram notification ───────────────────────────────────────────────────
 
 async function sendTelegram(event: PendingEvent, dialogue: string): Promise<void> {
   if (!TG_BOT_TOKEN || !TG_CHAT_ID) return;
   if (!NOTIFY_TRIGGERS.has(event.trigger)) return;
 
   const text = [
-    `🦀 *Clawverse Social Event*`,
+    '🦀 *Clawverse Social Event*',
     `Trigger: ${event.trigger} @ ${event.location}`,
     `${event.fromName} (${event.fromArchetype}) → ${event.toName} (${event.toArchetype})`,
     dialogue ? `"${dialogue}"` : '*(silent encounter)*',
@@ -197,8 +212,6 @@ async function sendTelegram(event: PendingEvent, dialogue: string): Promise<void
     log(`Telegram failed: ${(err as Error).message}`);
   }
 }
-
-// ─── Daemon HTTP calls ────────────────────────────────────────────────────────
 
 async function fetchPending(): Promise<PendingEvent[]> {
   try {
@@ -226,8 +239,6 @@ async function resolveEvent(id: string, dialogue: string): Promise<boolean> {
   }
 }
 
-// ─── Main poll loop ───────────────────────────────────────────────────────────
-
 async function poll(): Promise<void> {
   const pending = await fetchPending();
   if (pending.length === 0) return;
@@ -236,12 +247,17 @@ async function poll(): Promise<void> {
 
   for (const event of pending) {
     log(`  [${event.trigger}] ${event.fromName} → ${event.toName}`);
+    const selected = selectTaskVariant('social-dialogue', { stickyKey: event.id });
 
     const dialogue = await runner.run('social-dialogue', async () => {
-      const text = await generateDialogue(event);
+      const text = await generateDialogue(event, selected.variantKind);
       const ok = await resolveEvent(event.id, text);
       if (!ok) throw new Error(`Failed to resolve event ${event.id}`);
       return text;
+    }, {
+      stickyKey: event.id,
+      variant: selected.variant,
+      meta: { promptMode: selected.variantKind },
     }).catch((err: Error) => {
       log(`  Failed: ${err.message}`);
       return null;
@@ -265,8 +281,6 @@ async function runPollCycle(): Promise<void> {
     pollRunning = false;
   }
 }
-
-// ─── Entry point ─────────────────────────────────────────────────────────────
 
 const providerInfo = llmProviderInfo();
 log('Clawverse Social Worker started');

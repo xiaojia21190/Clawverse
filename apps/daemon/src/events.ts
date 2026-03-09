@@ -3,21 +3,25 @@ import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
 
 export type LifeEventType =
   | 'need_critical' | 'skill_levelup' | 'relationship_milestone'
-  | 'mood_crisis' | 'faction_forming' | 'random_event'
+  | 'mood_crisis' | 'faction_founding' | 'random_event'
   | 'resource_drought' | 'cpu_storm' | 'storage_overflow' | 'need_cascade'
-  | 'stranger_arrival' | 'faction_war' | 'peace_treaty' | 'betrayal'
+  | 'stranger_arrival' | 'faction_war' | 'faction_alliance' | 'faction_vassalage' | 'faction_tribute' | 'peace_treaty' | 'betrayal'
   | 'skill_tournament' | 'resource_windfall' | 'legendary_builder'
-  | 'epic_journey' | 'legacy_event' | 'faction_founding'
-  | 'great_migration' | 'building_completed';
+  | 'epic_journey' | 'legacy_event'
+  | 'great_migration' | 'building_completed'
+  | 'faction_ascendant' | 'faction_splintering'
+  | 'raid_alert' | 'combat_report' | 'injury' | 'death';
 
 export const LIFE_EVENT_TYPES: LifeEventType[] = [
   'need_critical', 'skill_levelup', 'relationship_milestone',
-  'mood_crisis', 'faction_forming', 'random_event',
+  'mood_crisis', 'faction_founding', 'random_event',
   'resource_drought', 'cpu_storm', 'storage_overflow', 'need_cascade',
-  'stranger_arrival', 'faction_war', 'peace_treaty', 'betrayal',
+  'stranger_arrival', 'faction_war', 'faction_alliance', 'faction_vassalage', 'faction_tribute', 'peace_treaty', 'betrayal',
   'skill_tournament', 'resource_windfall', 'legendary_builder',
-  'epic_journey', 'legacy_event', 'faction_founding',
+  'epic_journey', 'legacy_event',
   'great_migration', 'building_completed',
+  'faction_ascendant', 'faction_splintering',
+  'raid_alert', 'combat_report', 'injury', 'death',
 ];
 
 const LIFE_EVENT_TYPE_SET = new Set<string>(LIFE_EVENT_TYPES);
@@ -34,21 +38,24 @@ export interface LifeEvent {
   resolved: boolean;
 }
 
+export type LifeEventListener = (event: LifeEvent) => void;
+
 const RANDOM_INTERVAL_MS = Number(process.env.CLAWVERSE_LIFE_RANDOM_INTERVAL_MS || 30 * 60_000);
 
 const RANDOM_POOL = [
-  { subtype: 'resource_windfall',  description: 'A high-quality knowledge cache surfaces nearby' },
-  { subtype: 'cpu_storm',          description: 'A sudden load spike hits the town' },
-  { subtype: 'rumor_spreading',    description: 'A message propagates through the network' },
+  { subtype: 'resource_windfall', description: 'A high-quality knowledge cache surfaces nearby' },
+  { subtype: 'cpu_storm', description: 'A sudden load spike hits the town' },
+  { subtype: 'rumor_spreading', description: 'A message propagates through the network' },
   { subtype: 'stranger_knowledge', description: 'An unknown node carries rare information' },
-  { subtype: 'resource_drought',   description: 'Compute resources are running scarce across town' },
-  { subtype: 'skill_tournament',   description: 'A challenge has been issued — compete for glory' },
+  { subtype: 'resource_drought', description: 'Compute resources are running scarce across town' },
+  { subtype: 'skill_tournament', description: 'A challenge has been issued - compete for glory' },
 ];
 
 export class EventEngine {
   private readonly dbHandle: ClawverseDbHandle;
   private pending: Map<string, LifeEvent> = new Map();
   private randomTimer: NodeJS.Timeout | null = null;
+  private listeners = new Set<LifeEventListener>();
 
   constructor(opts?: { dbPath?: string }) {
     this.dbHandle = openClawverseDb(opts?.dbPath);
@@ -61,7 +68,15 @@ export class EventEngine {
   }
 
   stop(): void {
-    if (this.randomTimer) { clearInterval(this.randomTimer); this.randomTimer = null; }
+    if (this.randomTimer) {
+      clearInterval(this.randomTimer);
+      this.randomTimer = null;
+    }
+  }
+
+  onEvent(listener: LifeEventListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   async destroy(): Promise<void> {
@@ -69,17 +84,19 @@ export class EventEngine {
   }
 
   emit(type: LifeEventType, payload: Record<string, unknown> = {}): void {
-    const disc = String(payload.need ?? payload.skill ?? payload.peerId ?? payload.subtype ?? '');
+    const disc = String(payload.need ?? payload.skill ?? payload.peerId ?? payload.subtype ?? payload.chainId ?? '');
     const dupe = Array.from(this.pending.values()).find(
-      e => e.type === type &&
-           String(e.payload.need ?? e.payload.skill ?? e.payload.peerId ?? e.payload.subtype ?? '') === disc
+      (event) => event.type === type
+        && String(event.payload.need ?? event.payload.skill ?? event.payload.peerId ?? event.payload.subtype ?? event.payload.chainId ?? '') === disc,
     );
     if (dupe) return;
 
     const event: LifeEvent = {
       id: `life-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
       ts: new Date().toISOString(),
-      type, payload, resolved: false,
+      type,
+      payload,
+      resolved: false,
     };
 
     this.pending.set(event.id, event);
@@ -92,16 +109,26 @@ export class EventEngine {
         resolved = excluded.resolved,
         payload_json = excluded.payload_json
     `).run(event.id, event.ts, event.type, 0, JSON.stringify(event));
+
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        logger.warn('[events] listener failed:', (error as Error).message);
+      }
+    }
+
     logger.info(`[events] ${type}: ${JSON.stringify(payload)}`);
   }
 
   getPending(): LifeEvent[] {
-    return Array.from(this.pending.values()).filter(e => !e.resolved);
+    return Array.from(this.pending.values()).filter((event) => !event.resolved);
   }
 
   resolve(id: string): boolean {
     const event = this.pending.get(id);
     if (!event) return false;
+
     event.resolved = true;
     this.pending.delete(id);
     this.dbHandle.db.prepare(`
@@ -128,7 +155,7 @@ export class EventEngine {
     for (const row of rows) {
       try {
         const event = JSON.parse(row.payload_json) as LifeEvent;
-        if (!event.resolved) {
+        if (!event.resolved && isLifeEventType(event.type)) {
           this.pending.set(event.id, event);
         }
       } catch {

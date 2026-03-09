@@ -1,12 +1,25 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 
+export interface FactionStrategicInfo {
+  agenda: string;
+  prosperity: number;
+  cohesion: number;
+  influence: number;
+  pressure: number;
+  stage: string;
+  lastUpdatedAt: string;
+}
+
 export interface FactionInfo {
   id: string;
   name: string;
   founderId: string;
+  founderActorId?: string;
   members: string[];
+  memberActorIds?: string[];
   createdAt: string;
   motto: string;
+  strategic: FactionStrategicInfo;
 }
 
 export interface FactionWarInfo {
@@ -18,16 +31,54 @@ export interface FactionWarInfo {
   status: string;
 }
 
+export interface FactionAllianceInfo {
+  id: string;
+  factionA: string;
+  factionB: string;
+  formedAt: string;
+  expiresAt: string;
+  lastRenewedAt: string | null;
+  endedAt: string | null;
+  status: string;
+}
+
+export interface FactionVassalageInfo {
+  id: string;
+  overlordId: string;
+  vassalId: string;
+  formedAt: string;
+  endedAt: string | null;
+  status: string;
+}
+
+export type FactionTributeResource = 'compute' | 'storage' | 'bandwidth' | 'reputation';
+
+export interface FactionTributeInfo {
+  id: string;
+  vassalageId: string;
+  overlordId: string;
+  vassalId: string;
+  resource: FactionTributeResource;
+  amount: number;
+  collectedAt: string;
+}
+
 export function useFactions() {
   const factions = ref<FactionInfo[]>([]);
   const wars = ref<FactionWarInfo[]>([]);
+  const alliances = ref<FactionAllianceInfo[]>([]);
+  const vassalages = ref<FactionVassalageInfo[]>([]);
+  const tributes = ref<FactionTributeInfo[]>([]);
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function refresh() {
     try {
-      const [fRes, wRes] = await Promise.all([
+      const [fRes, wRes, aRes, vRes, tRes] = await Promise.all([
         fetch('/factions'),
         fetch('/factions/wars'),
+        fetch('/factions/alliances'),
+        fetch('/factions/vassalages'),
+        fetch('/factions/tributes'),
       ]);
       if (fRes.ok) {
         const data = await fRes.json();
@@ -37,7 +88,21 @@ export function useFactions() {
         const data = await wRes.json();
         wars.value = data.wars ?? [];
       }
-    } catch { /* ignore */ }
+      if (aRes.ok) {
+        const data = await aRes.json();
+        alliances.value = data.alliances ?? [];
+      }
+      if (vRes.ok) {
+        const data = await vRes.json();
+        vassalages.value = data.vassalages ?? [];
+      }
+      if (tRes.ok) {
+        const data = await tRes.json();
+        tributes.value = data.tributes ?? [];
+      }
+    } catch {
+      // ignore temporary network jitter
+    }
   }
 
   async function createFaction(name: string, motto: string) {
@@ -51,17 +116,37 @@ export function useFactions() {
   }
 
   async function joinFaction(id: string) {
-    await fetch(`/factions/${id}/join`, { method: 'POST' });
+    await fetch('/factions/' + id + '/join', { method: 'POST' });
+    await refresh();
+  }
+
+  async function formAlliance(id: string) {
+    await fetch('/factions/' + id + '/alliance', { method: 'POST' });
+    await refresh();
+  }
+
+  async function vassalizeFaction(id: string) {
+    await fetch('/factions/' + id + '/vassalize', { method: 'POST' });
+    await refresh();
+  }
+
+  async function renewAlliance(id: string) {
+    await fetch('/factions/alliances/' + id + '/renew', { method: 'POST' });
+    await refresh();
+  }
+
+  async function breakAlliance(id: string) {
+    await fetch('/factions/alliances/' + id + '/break', { method: 'POST' });
     await refresh();
   }
 
   async function leaveFaction(id: string) {
-    await fetch(`/factions/${id}/leave`, { method: 'POST' });
+    await fetch('/factions/' + id + '/leave', { method: 'POST' });
     await refresh();
   }
 
   async function declarePeace(warId: string) {
-    await fetch(`/factions/wars/${warId}/peace`, { method: 'POST' });
+    await fetch('/factions/wars/' + warId + '/peace', { method: 'POST' });
     await refresh();
   }
 
@@ -69,9 +154,10 @@ export function useFactions() {
     refresh();
     timer = setInterval(refresh, 15000);
   });
+
   onUnmounted(() => {
     if (timer) clearInterval(timer);
   });
 
-  return { factions, wars, refresh, createFaction, joinFaction, leaveFaction, declarePeace };
+  return { factions, wars, alliances, vassalages, tributes, refresh, createFaction, joinFaction, formAlliance, vassalizeFaction, renewAlliance, breakAlliance, leaveFaction, declarePeace };
 }

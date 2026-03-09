@@ -1,3 +1,6 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
 import Fastify, { FastifyInstance, FastifyReply } from 'fastify';
 import { StateStore } from './state.js';
 import { BioMonitor } from './bio.js';
@@ -11,17 +14,25 @@ import { EconomySystem } from './economy.js';
 import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
 import { FactionSystem } from './faction.js';
+import { JobsSystem, JobKind, JobPayload } from './jobs.js';
+import { CombatSystem } from './combat.js';
+import type { StrategicGovernorState } from './governor-planner.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
 import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
+import type { EvolutionRuntimeConfig } from '@clawverse/types';
 import { createTradeRequest } from '@clawverse/protocol';
+import { resolveProjectPath } from './paths.js';
+import { buildWorldNodes, findPeerByIdentity } from './world-nodes.js';
 
 interface APIContext {
   stateStore: StateStore;
   bioMonitor: BioMonitor;
   network: ClawverseNetwork;
   myId: string;
+  topic: string;
   episodeLogger: EvolutionEpisodeLogger | null;
+  evolutionConfig: EvolutionRuntimeConfig;
   social: SocialSystem;
   collab: CollabSystem;
   needs: NeedsSystem;
@@ -31,7 +42,11 @@ interface APIContext {
   world: WorldMap;
   storyteller: Storyteller;
   faction?: FactionSystem;
-  // Called when /dna/soul is POSTed — daemon regenerates DNA and re-announces
+  jobs: JobsSystem;
+  combat: CombatSystem;
+  getGovernorState: () => StrategicGovernorState;
+  applyCombatEffects: (effects: import('./combat.js').CombatTickEffect) => void;
+  // Called when /dna/soul is POSTed 闂?daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
 }
 
@@ -63,11 +78,271 @@ function locationName(pos: { x: number; y: number }): string {
   return 'Residential';
 }
 
+function parseOptionalIso(value: unknown): number {
+  if (typeof value !== 'string' || !value.trim()) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function readJsonFile<T>(path: string): T | null {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+function readJsonLines<T>(path: string, limit = 8): T[] {
+  try {
+    const raw = readFileSync(path, 'utf8').trim();
+    if (!raw) return [];
+    return raw
+      .split('\n')
+      .filter(Boolean)
+      .slice(-Math.max(1, limit))
+      .map((line) => JSON.parse(line) as T)
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+type EvolutionRunStep =
+  | 'propose'
+  | 'evaluate'
+  | 'decide'
+  | 'health-check'
+  | 'apply-rollout'
+  | 'cycle'
+  | 'init-rollout';
+
+interface EvolutionRunInfo {
+  step: EvolutionRunStep;
+  startedAt: string;
+  pid: number | null;
+}
+
+interface EvolutionRunResult extends EvolutionRunInfo {
+  finishedAt: string;
+  durationMs: number;
+  ok: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+interface EvolutionRunAuditEntry {
+  ts: string;
+  step: string;
+  force: boolean;
+  outcome: 'accepted' | 'rejected' | 'completed';
+  operatorKind: 'town-viewer' | 'openclaw-worker' | 'manual-cli' | 'daemon-policy' | 'unknown';
+  note?: string | null;
+  ok?: boolean;
+  reason?: string | null;
+  statusCode?: number | null;
+  remoteAddress: string;
+  origin: string | null;
+  userAgent: string | null;
+  source: string | null;
+  pid?: number | null;
+  durationMs?: number | null;
+}
+
+interface EvolutionCooldownSnapshot {
+  globalActive: boolean;
+  globalUntil: string | null;
+  globalRemainingMs: number;
+  byStep: Partial<Record<EvolutionRunStep, {
+    active: boolean;
+    until: string | null;
+    remainingMs: number;
+  }>>;
+}
+
+const EVOLUTION_STEP_SCRIPTS: Record<EvolutionRunStep, string> = {
+  propose: 'tools/evolution/propose.mjs',
+  evaluate: 'tools/evolution/evaluate.mjs',
+  decide: 'tools/evolution/decide.mjs',
+  'health-check': 'tools/evolution/health-check.mjs',
+  'apply-rollout': 'tools/evolution/apply-rollout.mjs',
+  cycle: 'tools/evolution/cycle.mjs',
+  'init-rollout': 'tools/evolution/init-rollout.mjs',
+};
+
+function isEvolutionRunStep(value: unknown): value is EvolutionRunStep {
+  return typeof value === 'string' && value in EVOLUTION_STEP_SCRIPTS;
+}
+
+function normalizeRemoteAddress(value: string | undefined): string {
+  return value?.trim() || 'unknown';
+}
+
+function isLoopbackAddress(value: string | undefined): boolean {
+  const remote = normalizeRemoteAddress(value).toLowerCase();
+  return remote === '127.0.0.1'
+    || remote === '::1'
+    || remote === '::ffff:127.0.0.1'
+    || remote.startsWith('::ffff:127.0.0.');
+}
+
+function resolveEvolutionOperatorKind(
+  source: string | null,
+  origin: string | null,
+  userAgent: string | null,
+): EvolutionRunAuditEntry['operatorKind'] {
+  const normalizedSource = source?.trim().toLowerCase() ?? '';
+  const normalizedOrigin = origin?.trim().toLowerCase() ?? '';
+  const normalizedAgent = userAgent?.trim().toLowerCase() ?? '';
+
+  if (normalizedSource === 'town-viewer' || normalizedOrigin.includes('5173') || normalizedAgent.includes('mozilla/')) {
+    return 'town-viewer';
+  }
+  if (normalizedSource === 'daemon-policy' || normalizedSource.includes('daemon-policy')) {
+    return 'daemon-policy';
+  }
+  if (normalizedSource.includes('worker') || normalizedSource.includes('openclaw')) {
+    return 'openclaw-worker';
+  }
+  if (
+    normalizedAgent.includes('curl/')
+    || normalizedAgent.includes('powershell/')
+    || normalizedAgent.includes('wget/')
+    || normalizedAgent.includes('httpie/')
+    || (!normalizedSource && !normalizedOrigin && !!normalizedAgent)
+  ) {
+    return 'manual-cli';
+  }
+  return normalizedSource || normalizedOrigin || normalizedAgent ? 'unknown' : 'manual-cli';
+}
+
+function normalizeEvolutionNote(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 200);
+}
+
 export async function createHttpServer(
   port: number,
   context: APIContext
 ): Promise<FastifyInstance> {
   const fastify = Fastify({ logger: false });
+  const projectRoot = resolveProjectPath('.');
+  const evolutionAuditPath = resolveProjectPath('data/evolution/audit/run-history.jsonl');
+  const evolutionCooldownConfig = context.evolutionConfig.cooldowns;
+  let activeEvolutionRun: EvolutionRunInfo | null = null;
+  let lastEvolutionRun: EvolutionRunResult | null = null;
+  let evolutionGlobalCooldownUntil = 0;
+  const evolutionStepCooldownUntil = new Map<EvolutionRunStep, number>();
+
+  const currentActorId = (): string => {
+    const myState = context.stateStore.getMyState();
+    return myState?.actorId ?? myState?.dna.id ?? context.myId;
+  };
+
+  const ownedBuildings = () => context.world.getOwnedBuildings(context.myId, currentActorId());
+  const ownedBuildingTypes = () => ownedBuildings().map((building) => building.type);
+
+  function appendEvolutionAudit(entry: EvolutionRunAuditEntry): void {
+    try {
+      mkdirSync(join(evolutionAuditPath, '..'), { recursive: true });
+      appendFileSync(evolutionAuditPath, `${JSON.stringify(entry)}\n`);
+    } catch (error) {
+      logger.warn(`[evolution] failed to append audit log: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function readEvolutionCooldowns(nowMs = Date.now()): EvolutionCooldownSnapshot {
+    const globalActive = evolutionGlobalCooldownUntil > nowMs;
+    const byStep = {} as EvolutionCooldownSnapshot['byStep'];
+    for (const step of Object.keys(EVOLUTION_STEP_SCRIPTS) as EvolutionRunStep[]) {
+      const untilMs = evolutionStepCooldownUntil.get(step) ?? 0;
+      const active = untilMs > nowMs;
+      byStep[step] = {
+        active,
+        until: active ? new Date(untilMs).toISOString() : null,
+        remainingMs: active ? Math.max(0, untilMs - nowMs) : 0,
+      };
+    }
+    return {
+      globalActive,
+      globalUntil: globalActive ? new Date(evolutionGlobalCooldownUntil).toISOString() : null,
+      globalRemainingMs: globalActive ? Math.max(0, evolutionGlobalCooldownUntil - nowMs) : 0,
+      byStep,
+    };
+  }
+
+  async function runEvolutionStep(
+    step: EvolutionRunStep,
+    args: string[] = [],
+    auditMeta?: Omit<EvolutionRunAuditEntry, 'ts' | 'step' | 'force' | 'outcome' | 'ok' | 'reason' | 'statusCode' | 'pid' | 'durationMs'>,
+  ): Promise<EvolutionRunResult> {
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
+    const scriptPath = resolveProjectPath(EVOLUTION_STEP_SCRIPTS[step]);
+
+    return await new Promise<EvolutionRunResult>((resolve, reject) => {
+      const child = spawn(process.execPath, [scriptPath, ...args], {
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          CLAWVERSE_PROJECT_ROOT: projectRoot,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      activeEvolutionRun = {
+        step,
+        startedAt,
+        pid: child.pid ?? null,
+      };
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        const result: EvolutionRunResult = {
+          step,
+          startedAt,
+          pid: child.pid ?? null,
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedMs,
+          ok: code === 0,
+          exitCode: code,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+        };
+        lastEvolutionRun = result;
+        activeEvolutionRun = null;
+        appendEvolutionAudit({
+          ts: result.finishedAt,
+          step,
+          force: args.includes('--force'),
+          outcome: 'completed',
+          operatorKind: auditMeta?.operatorKind ?? 'unknown',
+          note: auditMeta?.note ?? null,
+          ok: result.ok,
+          reason: result.ok ? null : (result.stderr || 'step_failed'),
+          statusCode: result.ok ? 200 : 500,
+          remoteAddress: auditMeta?.remoteAddress ?? '127.0.0.1',
+          origin: auditMeta?.origin ?? 'daemon',
+          userAgent: auditMeta?.userAgent ?? 'daemon',
+          source: auditMeta?.source ?? 'daemon',
+          pid: result.pid,
+          durationMs: result.durationMs,
+        });
+        resolve(result);
+      });
+    });
+  }
 
   // Wire social events to SSE
   context.social.on('event', (e) => broadcastSocialSse(e));
@@ -82,16 +357,22 @@ export async function createHttpServer(
   // Get my status
   fastify.get('/status', async () => {
     const metrics = context.bioMonitor.getMetrics();
-    const mood = context.bioMonitor.getMood();
-    const peers = context.network.getPeers();
     const myState = context.stateStore.getMyState();
+    const mood = myState?.mood ?? context.bioMonitor.getMood();
+    const peers = context.network.getPeers();
+    const knownActors = buildWorldNodes(context.stateStore.getAllPeers()).length;
     return {
       id: context.myId,
+      actorId: myState?.actorId ?? myState?.dna.id ?? null,
+      topic: context.topic,
       mood,
       metrics,
       state: myState,
+      combat: context.combat.getStatus(),
+      governor: context.getGovernorState(),
       connectedPeers: peers.length,
       knownPeers: context.stateStore.getPeerCount(),
+      knownActors,
     };
   });
 
@@ -103,7 +384,9 @@ export async function createHttpServer(
 
   // Get specific peer
   fastify.get<{ Params: { peerId: string } }>('/peers/:peerId', async (request, reply) => {
-    const state = context.stateStore.getPeerState(request.params.peerId);
+    const peers = context.stateStore.getAllPeers();
+    const state = context.stateStore.getPeerState(request.params.peerId)
+      ?? findPeerByIdentity(peers, request.params.peerId);
     if (!state) { reply.code(404); return { error: 'Peer not found' }; }
     return state;
   });
@@ -132,6 +415,7 @@ export async function createHttpServer(
     myId: context.myId,
     connectedPeers: context.network.getPeerCount(),
     knownPeers: context.stateStore.getPeerCount(),
+    knownActors: buildWorldNodes(context.stateStore.getAllPeers()).length,
     peers: context.network.getPeers(),
   }));
 
@@ -141,6 +425,348 @@ export async function createHttpServer(
     variant: context.episodeLogger?.getVariant() ?? null,
     episodesPath: context.episodeLogger?.getPath() ?? null,
   }));
+
+  fastify.get('/evolution/status', async () => {
+    const response: {
+      enabled: boolean;
+      variant: string | null;
+      episodesPath: string | null;
+      config: {
+        autopilot: EvolutionRuntimeConfig['autopilot'];
+        cooldowns: EvolutionRuntimeConfig['cooldowns'];
+      };
+      stats: {
+        total: number;
+      } | null;
+      rollout: Record<string, unknown> | null;
+      latest: Record<string, unknown> | null;
+      history: Array<Record<string, unknown>>;
+      audit: EvolutionRunAuditEntry[];
+      cooldowns: EvolutionCooldownSnapshot;
+      runner: {
+        active: EvolutionRunInfo | null;
+        last: EvolutionRunResult | null;
+      };
+    } = {
+      enabled: !!context.episodeLogger,
+      variant: context.episodeLogger?.getVariant() ?? null,
+      episodesPath: context.episodeLogger?.getPath() ?? null,
+      config: {
+        autopilot: context.evolutionConfig.autopilot,
+        cooldowns: context.evolutionConfig.cooldowns,
+      },
+      stats: null,
+      rollout: null,
+      latest: null,
+      history: [],
+      audit: [],
+      cooldowns: readEvolutionCooldowns(),
+      runner: {
+        active: activeEvolutionRun,
+        last: lastEvolutionRun,
+      },
+    };
+
+    const rolloutStatePath = resolveProjectPath('data/evolution/rollout/state.json');
+    const proposalsLatestPath = resolveProjectPath('data/evolution/proposals/LATEST');
+    const rolloutHistoryPath = resolveProjectPath('data/evolution/rollout/history.jsonl');
+
+    if (existsSync(rolloutStatePath)) {
+      const rollout = readJsonFile<Record<string, unknown>>(rolloutStatePath);
+      if (rollout) {
+        const nowMs = Date.now();
+        const lastRatioChangeAtMs = parseOptionalIso(rollout.lastRatioChangeAt);
+        const healthWindowStartAtMs = parseOptionalIso(rollout.healthWindowStartAt);
+        const lastHealthCheckAtMs = parseOptionalIso(rollout.lastHealthCheckAt);
+        const canaryLockedUntilMs = parseOptionalIso(rollout.canaryLockedUntil);
+        const canaryActive = Number(rollout.candidateRatio ?? 0) > 0
+          && canaryLockedUntilMs > nowMs;
+        const canaryRemainingMs = canaryActive ? Math.max(0, canaryLockedUntilMs - nowMs) : 0;
+        const healthFresh = Boolean(
+          lastRatioChangeAtMs
+          && healthWindowStartAtMs
+          && lastHealthCheckAtMs
+          && healthWindowStartAtMs === lastRatioChangeAtMs
+          && lastHealthCheckAtMs >= healthWindowStartAtMs
+        );
+
+        response.rollout = {
+          ...rollout,
+          canary: {
+            active: canaryActive,
+            remainingMs: canaryRemainingMs,
+            remainingMinutes: Math.ceil(canaryRemainingMs / 60_000),
+            lockedUntil: typeof rollout.canaryLockedUntil === 'string' ? rollout.canaryLockedUntil : null,
+          },
+          healthGate: {
+            status: healthFresh
+              ? (typeof rollout.healthGateStatus === 'string' ? rollout.healthGateStatus : 'pending')
+              : 'pending',
+            rawStatus: typeof rollout.healthGateStatus === 'string' ? rollout.healthGateStatus : 'pending',
+            fresh: healthFresh,
+            lastHealthCheckAt: typeof rollout.lastHealthCheckAt === 'string' ? rollout.lastHealthCheckAt : null,
+            windowStartAt: typeof rollout.healthWindowStartAt === 'string' ? rollout.healthWindowStartAt : null,
+            rollbackApplied: Boolean(rollout.healthRollbackApplied),
+            samples: rollout.healthSamples ?? null,
+            checks: rollout.healthChecks ?? null,
+          },
+        };
+      }
+    }
+
+    if (context.episodeLogger) {
+      try {
+        const stats = context.episodeLogger.getStats();
+        response.stats = { total: stats.total };
+      } catch {
+        response.stats = null;
+      }
+    }
+
+    if (existsSync(proposalsLatestPath)) {
+      const latestRaw = readFileSync(proposalsLatestPath, 'utf8').trim().replace(/\.json$/, '');
+      const decisionPath = resolveProjectPath(join('data/evolution/decisions', `${latestRaw}.json`));
+      const reportPath = resolveProjectPath(join('data/evolution/reports', `${latestRaw}.json`));
+      response.latest = {
+        proposalId: latestRaw,
+        decision: existsSync(decisionPath) ? readJsonFile<Record<string, unknown>>(decisionPath) : null,
+        report: existsSync(reportPath) ? readJsonFile<Record<string, unknown>>(reportPath) : null,
+      };
+    }
+
+    if (existsSync(rolloutHistoryPath)) {
+      response.history = readJsonLines<Record<string, unknown>>(rolloutHistoryPath, 8);
+    }
+
+    if (existsSync(evolutionAuditPath)) {
+      response.audit = readJsonLines<EvolutionRunAuditEntry>(evolutionAuditPath, 12);
+    }
+
+    return response;
+  });
+
+  fastify.get<{ Querystring: { limit?: string; since?: string } }>('/evolution/history', async (request) => {
+    const rolloutHistoryPath = resolveProjectPath('data/evolution/rollout/history.jsonl');
+    const limitRaw = Number(request.query?.limit ?? 20);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.round(limitRaw))) : 20;
+    const sinceMs = parseOptionalIso(request.query?.since);
+    const entries = existsSync(rolloutHistoryPath)
+      ? readJsonLines<Record<string, unknown>>(rolloutHistoryPath, limit * 4)
+        .filter((entry) => !sinceMs || parseOptionalIso(entry.ts) >= sinceMs)
+        .slice(0, limit)
+      : [];
+    return { entries };
+  });
+
+  fastify.get<{
+    Querystring: {
+      limit?: string;
+      since?: string;
+      step?: string;
+      outcome?: string;
+      operatorKind?: string;
+      ok?: string;
+    };
+  }>('/evolution/audit', async (request) => {
+    const limitRaw = Number(request.query?.limit ?? 20);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.round(limitRaw))) : 20;
+    const sinceMs = parseOptionalIso(request.query?.since);
+    const step = typeof request.query?.step === 'string' ? request.query.step.trim() : '';
+    const outcome = typeof request.query?.outcome === 'string' ? request.query.outcome.trim() : '';
+    const operatorKind = typeof request.query?.operatorKind === 'string' ? request.query.operatorKind.trim() : '';
+    const okFilter = typeof request.query?.ok === 'string'
+      ? request.query.ok.trim().toLowerCase()
+      : '';
+
+    const entries = existsSync(evolutionAuditPath)
+      ? readJsonLines<EvolutionRunAuditEntry>(evolutionAuditPath, limit * 6)
+        .filter((entry) => !sinceMs || parseOptionalIso(entry.ts) >= sinceMs)
+        .filter((entry) => !step || entry.step === step)
+        .filter((entry) => !outcome || entry.outcome === outcome)
+        .filter((entry) => !operatorKind || entry.operatorKind === operatorKind)
+        .filter((entry) => {
+          if (!okFilter) return true;
+          if (okFilter === 'true') return entry.ok === true;
+          if (okFilter === 'false') return entry.ok === false;
+          return true;
+        })
+        .slice(0, limit)
+      : [];
+
+    return { entries };
+  });
+
+  fastify.post<{ Body: { step?: string; force?: boolean; note?: string } }>('/evolution/run', async (request, reply) => {
+    const step = request.body?.step;
+    const force = request.body?.force === true;
+    const note = normalizeEvolutionNote(request.body?.note);
+    const remoteAddress = normalizeRemoteAddress(request.ip || request.socket.remoteAddress);
+    const origin = typeof request.headers.origin === 'string' ? request.headers.origin : null;
+    const userAgent = typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null;
+    const source = typeof request.headers['x-clawverse-origin'] === 'string' ? request.headers['x-clawverse-origin'] : null;
+    const operatorKind = resolveEvolutionOperatorKind(source, origin, userAgent);
+
+    if (!isLoopbackAddress(remoteAddress)) {
+      appendEvolutionAudit({
+        ts: new Date().toISOString(),
+        step: typeof step === 'string' ? step : 'unknown',
+        force,
+        outcome: 'rejected',
+        operatorKind,
+        note,
+        ok: false,
+        reason: 'non_loopback_request',
+        statusCode: 403,
+        remoteAddress,
+        origin,
+        userAgent,
+        source,
+      });
+      return reply.code(403).send({ error: 'evolution run is restricted to localhost' });
+    }
+
+    if (!isEvolutionRunStep(step)) {
+      appendEvolutionAudit({
+        ts: new Date().toISOString(),
+        step: typeof step === 'string' ? step : 'unknown',
+        force,
+        outcome: 'rejected',
+        operatorKind,
+        note,
+        ok: false,
+        reason: 'invalid_step',
+        statusCode: 400,
+        remoteAddress,
+        origin,
+        userAgent,
+        source,
+      });
+      return reply.code(400).send({ error: 'invalid step' });
+    }
+    if (activeEvolutionRun) {
+      appendEvolutionAudit({
+        ts: new Date().toISOString(),
+        step,
+        force,
+        outcome: 'rejected',
+        operatorKind,
+        note,
+        ok: false,
+        reason: 'run_already_active',
+        statusCode: 409,
+        remoteAddress,
+        origin,
+        userAgent,
+        source,
+      });
+      return reply.code(409).send({ error: 'evolution run already active', active: activeEvolutionRun });
+    }
+
+    const cooldowns = readEvolutionCooldowns();
+    const stepCooldown = cooldowns.byStep[step];
+    if (cooldowns.globalActive || stepCooldown?.active) {
+      const reason = cooldowns.globalActive ? 'global_cooldown_active' : 'step_cooldown_active';
+      const retryAfterMs = Math.max(
+        cooldowns.globalRemainingMs,
+        stepCooldown?.remainingMs ?? 0,
+      );
+      appendEvolutionAudit({
+        ts: new Date().toISOString(),
+        step,
+        force,
+        outcome: 'rejected',
+        operatorKind,
+        note,
+        ok: false,
+        reason,
+        statusCode: 429,
+        remoteAddress,
+        origin,
+        userAgent,
+        source,
+      });
+      return reply.code(429).send({
+        error: reason,
+        retryAfterMs,
+        cooldowns,
+      });
+    }
+
+    const args = step === 'init-rollout' && force ? ['--force'] : [];
+    const nowMs = Date.now();
+    const stepCooldownMs = {
+      propose: evolutionCooldownConfig.stepMs.propose,
+      evaluate: evolutionCooldownConfig.stepMs.evaluate,
+      decide: evolutionCooldownConfig.stepMs.decide,
+      'health-check': evolutionCooldownConfig.stepMs.healthCheck,
+      'apply-rollout': evolutionCooldownConfig.stepMs.applyRollout,
+      cycle: evolutionCooldownConfig.stepMs.cycle,
+      'init-rollout': evolutionCooldownConfig.stepMs.initRollout,
+    } satisfies Record<EvolutionRunStep, number>;
+    evolutionGlobalCooldownUntil = nowMs + evolutionCooldownConfig.globalMs;
+    evolutionStepCooldownUntil.set(step, nowMs + stepCooldownMs[step]);
+    appendEvolutionAudit({
+      ts: new Date().toISOString(),
+      step,
+      force,
+      outcome: 'accepted',
+      operatorKind,
+      note,
+      ok: true,
+      reason: null,
+      statusCode: 202,
+      remoteAddress,
+      origin,
+      userAgent,
+      source,
+    });
+
+    try {
+      const result = await runEvolutionStep(step, args, {
+        operatorKind,
+        note,
+        remoteAddress,
+        origin,
+        userAgent,
+        source,
+      });
+      return result.ok
+        ? { ok: true, result }
+        : reply.code(500).send({ ok: false, result });
+    } catch (error) {
+      activeEvolutionRun = null;
+      const message = error instanceof Error ? error.message : String(error);
+      lastEvolutionRun = {
+        step,
+        startedAt: new Date().toISOString(),
+        pid: null,
+        finishedAt: new Date().toISOString(),
+        durationMs: 0,
+        ok: false,
+        exitCode: null,
+        stdout: '',
+        stderr: message,
+      };
+      appendEvolutionAudit({
+        ts: lastEvolutionRun.finishedAt,
+        step,
+        force,
+        outcome: 'completed',
+        operatorKind,
+        note,
+        ok: false,
+        reason: message,
+        statusCode: 500,
+        remoteAddress,
+        origin,
+        userAgent,
+        source,
+        pid: null,
+        durationMs: 0,
+      });
+      return reply.code(500).send({ ok: false, error: message });
+    }
+  });
 
   // Evolution stats
   fastify.get('/evolution/stats', async (_, reply) => {
@@ -190,7 +816,7 @@ export async function createHttpServer(
     return { ok: true, variant: context.episodeLogger.getVariant() };
   });
 
-  // DNA soul update — called by OpenClaw connector soul-worker
+  // DNA soul update 闂?called by OpenClaw connector soul-worker
   fastify.post<{
     Body: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] };
   }>('/dna/soul', async (request, reply) => {
@@ -307,10 +933,156 @@ export async function createHttpServer(
   );
   fastify.get('/life/relationships', async () => context.social.getAllRelationships());
 
-  fastify.get('/storyteller/status', async () => ({
-    mode: context.storyteller.getMode(),
-    tension: context.storyteller.getTension(),
+  fastify.get('/jobs', async () => ({
+    jobs: context.jobs.listJobs(),
   }));
+
+  fastify.get<{ Querystring: { assignee?: string; exclude?: string; claimer?: string; focus?: string } }>('/jobs/next', async (request) => {
+    const preferredAssignees = typeof request.query?.assignee === 'string'
+      ? request.query.assignee.split(',').map((value) => value.trim()).filter(Boolean)
+      : [];
+    const excludedIds = typeof request.query?.exclude === 'string'
+      ? request.query.exclude.split(',').map((value) => value.trim()).filter(Boolean)
+      : [];
+    const claimer = typeof request.query?.claimer === 'string'
+      ? request.query.claimer.trim()
+      : '';
+    const focus = typeof request.query?.focus === 'string'
+      ? request.query.focus.split(',').map((value) => value.trim()).filter(Boolean)
+      : [];
+    return {
+      job: context.jobs.getNextQueuedJob(preferredAssignees, excludedIds, claimer, '', focus),
+    };
+  });
+
+  fastify.post<{
+    Body: {
+      kind?: string;
+      title?: string;
+      reason?: string;
+      priority?: number;
+      payload?: JobPayload;
+      sourceEventType?: string;
+      dedupeKey?: string;
+    };
+  }>('/jobs', async (request, reply) => {
+    const { kind, title, reason, priority, payload, sourceEventType, dedupeKey } = request.body || {};
+    const validKinds: JobKind[] = ['build', 'trade', 'found_faction', 'join_faction', 'form_alliance', 'renew_alliance', 'break_alliance', 'vassalize_faction', 'declare_peace', 'move', 'collab', 'recover', 'craft'];
+    if (!kind || !validKinds.includes(kind as JobKind)) {
+      return reply.code(400).send({ error: 'invalid kind' });
+    }
+    if (!title || !reason) {
+      return reply.code(400).send({ error: 'title and reason required' });
+    }
+    const job = context.jobs.enqueueJob({
+      kind: kind as JobKind,
+      title,
+      reason,
+      priority,
+      payload: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {},
+      sourceEventType,
+      dedupeKey,
+    });
+    return { job };
+  });
+
+  fastify.post<{ Params: { id: string }; Body: { note?: string; payload?: JobPayload } }>(
+    '/jobs/:id/start',
+    async (request, reply) => {
+      const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
+      const payload = request.body?.payload && typeof request.body.payload === 'object' && !Array.isArray(request.body.payload)
+        ? request.body.payload
+        : undefined;
+      const job = context.jobs.startJob(request.params.id, { note, payload });
+      if (!job) {
+        const existing = context.jobs.getJob(request.params.id);
+        if (existing?.status === 'queued') {
+          return reply.code(409).send({ error: 'job lease conflict or not claimable' });
+        }
+        return reply.code(404).send({ error: 'job not found or not queued' });
+      }
+      return { job };
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: { note?: string; payload?: JobPayload } }>(
+    '/jobs/:id/requeue',
+    async (request, reply) => {
+      const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
+      const payload = request.body?.payload && typeof request.body.payload === 'object' && !Array.isArray(request.body.payload)
+        ? request.body.payload
+        : undefined;
+      const job = context.jobs.requeueActiveJob(request.params.id, { note, payload });
+      if (!job) return reply.code(404).send({ error: 'job not found or not active' });
+      return { job };
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: { note?: string; payload?: JobPayload } }>(
+    '/jobs/:id/retry',
+    async (request, reply) => {
+      const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
+      const payload = request.body?.payload && typeof request.body.payload === 'object' && !Array.isArray(request.body.payload)
+        ? request.body.payload
+        : undefined;
+      const job = context.jobs.retryActiveJob(request.params.id, { note, payload });
+      if (!job) return reply.code(404).send({ error: 'job not found or not active' });
+      return { job };
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: { note?: string } }>(
+    '/jobs/:id/complete',
+    async (request, reply) => {
+      const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
+      const job = context.jobs.completeJob(request.params.id, note);
+      if (!job) return reply.code(404).send({ error: 'job not found or already closed' });
+      return { job };
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: { note?: string } }>(
+    '/jobs/:id/cancel',
+    async (request, reply) => {
+      const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
+      const job = context.jobs.cancelJob(request.params.id, note);
+      if (!job) return reply.code(404).send({ error: 'job not found or already closed' });
+      return { job };
+    }
+  );
+
+  fastify.get('/combat/status', async () => context.combat.getStatus());
+
+  fastify.get<{ Querystring: { limit?: string } }>('/combat/logs', async (request) => {
+    const parsed = Number(request.query?.limit ?? 8);
+    return {
+      logs: context.combat.getLogs(Number.isFinite(parsed) ? parsed : 8),
+    };
+  });
+
+  fastify.post<{ Body: { posture?: string } }>('/combat/posture', async (request, reply) => {
+    const posture = typeof request.body?.posture === 'string' ? request.body.posture : null;
+    if (!posture || !['steady', 'guarded', 'fortified'].includes(posture)) {
+      return reply.code(400).send({ error: 'invalid posture' });
+    }
+    const status = context.combat.setPosture(posture as any);
+    return { ok: true, status };
+  });
+
+  fastify.post('/combat/treat', async (request, reply) => {
+    const hasShelter = ownedBuildings().some((building) => building.type === 'shelter');
+    const result = context.combat.treat({
+      hasShelter,
+      canUseRelayPatch: context.economy.getItemAmount('relay_patch') > 0,
+    });
+    context.applyCombatEffects(result.effect);
+    if (!result.ok) {
+      return reply.code(400).send({ error: result.reason ?? 'treatment_failed', status: result.status });
+    }
+    return { ok: true, healed: result.healed, status: result.status };
+  });
+
+  fastify.get('/storyteller/status', async () => context.storyteller.getStatus());
 
   fastify.post('/storyteller/mode', async (request, reply) => {
     const { mode } = request.body as { mode: string };
@@ -331,15 +1103,20 @@ export async function createHttpServer(
     const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
       ? body.payload
       : {};
-    context.events.emit(body.eventType, { ...payload, source: 'manual' });
+    context.storyteller.triggerEvent(body.eventType, payload, 'manual');
     return { success: true };
   });
 
   fastify.get('/world/map', async () => context.world.getMap());
 
+  fastify.get('/world/nodes', async () => ({
+    topic: context.topic,
+    nodes: buildWorldNodes(context.stateStore.getAllPeers()),
+  }));
+
   fastify.post('/world/build', async (request, reply) => {
     const { type, x, y } = request.body as { type: string; x: number; y: number };
-    const validTypes = ['forge', 'archive', 'beacon', 'market_stall', 'shelter'];
+    const validTypes = ['forge', 'archive', 'beacon', 'market_stall', 'shelter', 'watchtower'];
     if (!validTypes.includes(type)) return reply.code(400).send({ error: 'invalid building type' });
     const pos = { x: Math.max(0, Math.min(39, x)), y: Math.max(0, Math.min(39, y)) };
     const cost = context.world.getBuildingCost(type as any);
@@ -350,7 +1127,7 @@ export async function createHttpServer(
       return reply.code(400).send({ error: `need ${cost.storage} storage` });
     }
     const myState = context.stateStore.getMyState();
-    const building = context.world.build(type as any, pos, context.myId, myState?.name ?? context.myId.slice(0, 8));
+    const building = context.world.build(type as any, pos, context.myId, myState?.name ?? context.myId.slice(0, 8), myState?.actorId ?? myState?.dna.id ?? context.myId);
     if (!building) return reply.code(409).send({ error: 'position occupied or invalid' });
     context.economy.consume('compute', cost.compute);
     context.economy.consume('storage', cost.storage);
@@ -362,13 +1139,54 @@ export async function createHttpServer(
 
   fastify.delete('/world/build/:id', async (request, reply) => {
     const { id } = (request.params as { id: string });
-    const ok = context.world.demolish(id, context.myId);
+    const ok = context.world.demolish(id, context.myId, currentActorId());
     if (!ok) return reply.code(404).send({ error: 'not found or not yours' });
     return { success: true };
   });
 
   // Economy endpoints
   fastify.get('/economy/resources', async () => context.economy.getResources());
+
+  fastify.get('/economy/inventory', async () => ({
+    items: context.economy.getInventory(),
+  }));
+
+  fastify.get('/economy/recipes', async () => {
+    const mine = ownedBuildingTypes();
+    return {
+      ownedBuildings: mine,
+      recipes: context.economy.getRecipes(mine),
+    };
+  });
+
+  fastify.post<{ Body: { recipeId?: string } }>('/economy/craft', async (request, reply) => {
+    const recipeId = typeof request.body?.recipeId === 'string' ? request.body.recipeId : null;
+    if (!recipeId) return reply.code(400).send({ error: 'recipeId required' });
+
+    const mine = ownedBuildingTypes();
+    const result = context.economy.craft(recipeId as any, mine);
+    if (!result.ok) {
+      return reply.code(400).send({
+        error: result.reason ?? 'craft_failed',
+        recipe: result.recipe ?? null,
+      });
+    }
+
+    context.events.emit('resource_windfall', {
+      subtype: 'craft_completed',
+      recipeId,
+      output: result.output?.itemId ?? recipeId,
+      amount: result.output?.amount ?? 1,
+    });
+
+    return {
+      ok: true,
+      recipe: result.recipe,
+      output: result.output,
+      inventory: context.economy.getInventory(),
+      resources: context.economy.getResources(),
+    };
+  });
 
   fastify.post('/economy/trade', async (request, reply) => {
     const { toId, resource, amount, resourceWant, amountWant } = request.body as {
@@ -382,9 +1200,7 @@ export async function createHttpServer(
 
     const myState = context.stateStore.getMyState();
     const myZone = locationName(myState?.position ?? { x: 0, y: 0 });
-    const hasMarketStall = context.world.getMap().buildings.some(
-      b => b.type === 'market_stall' && b.ownerId === context.myId
-    );
+    const hasMarketStall = ownedBuildings().some((building) => building.type === 'market_stall');
     if (myZone !== 'Market' && !hasMarketStall) {
       return reply.code(403).send({ error: 'trading only available in Market zone or with market_stall' });
     }
@@ -408,6 +1224,21 @@ export async function createHttpServer(
         // Refund on send failure
         context.economy.award(resource as any, amount);
         context.economy.rejectTrade(tradeId);
+        context.economy.recordTradeOutcome(toId, false, 'peer_not_reachable', {
+          tradeId,
+          direction: 'outbound',
+          resource,
+          amount,
+          resourceWant,
+          amountWant,
+        });
+        context.events.emit('resource_drought', {
+          subtype: 'trade_route_failed',
+          severity: 'trade_blocked',
+          peerId: toId,
+          resource,
+          amount,
+        });
         return reply.code(502).send({ error: 'peer not reachable' });
       }
       return { success: true, tradeId, status: 'pending' };
@@ -417,6 +1248,13 @@ export async function createHttpServer(
     const ok = context.economy.consume(resource as any, amount);
     if (!ok) return reply.code(400).send({ error: 'insufficient resources' });
     context.economy.recordTrade(context.myId, toId, resource, amount);
+    context.events.emit('resource_windfall', {
+      subtype: 'trade_settled',
+      reason: 'local_transfer',
+      peerId: toId,
+      resource,
+      amount,
+    });
     return { success: true };
   });
 
@@ -428,7 +1266,7 @@ export async function createHttpServer(
   fastify.get('/economy/market', async () => {
     const peers = context.stateStore.getAllPeers();
     const marketPeers = peers.filter(p => locationName(p.position) === 'Market');
-    return { peers: marketPeers.map(p => ({ id: p.id, name: p.name, position: p.position })) };
+    return { peers: marketPeers.map(p => ({ id: p.id, name: p.name, position: p.position, market: p.market })) };
   });
 
   // Faction endpoints
@@ -439,6 +1277,32 @@ export async function createHttpServer(
   fastify.get('/factions/wars', async () => ({
     wars: context.faction?.getActiveWars() ?? [],
   }));
+
+  fastify.get('/factions/alliances', async () => ({
+    alliances: context.faction?.getActiveAlliances() ?? [],
+  }));
+
+  fastify.get('/factions/vassalages', async () => ({
+    vassalages: context.faction?.getActiveVassalages() ?? [],
+  }));
+
+  fastify.get('/factions/tributes', async () => ({
+    tributes: context.faction?.getTributes() ?? [],
+  }));
+
+  fastify.post('/factions/alliances/:id/renew', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const alliance = context.faction?.renewAlliance(id, context.myId);
+    if (!alliance) return reply.code(400).send({ error: 'cannot renew alliance' });
+    return { alliance };
+  });
+
+  fastify.post('/factions/alliances/:id/break', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const alliance = context.faction?.breakAlliance(id, context.myId);
+    if (!alliance) return reply.code(400).send({ error: 'cannot break alliance' });
+    return { alliance };
+  });
 
   fastify.get('/factions/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -453,6 +1317,20 @@ export async function createHttpServer(
     const faction = context.faction?.createFaction(name, context.myId, motto);
     if (!faction) return reply.code(400).send({ error: 'cannot create faction (need 3+ allies or already in one)' });
     return faction;
+  });
+
+  fastify.post('/factions/:id/alliance', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const alliance = context.faction?.formAlliance(id, context.myId);
+    if (!alliance) return reply.code(400).send({ error: 'cannot form alliance' });
+    return { alliance };
+  });
+
+  fastify.post('/factions/:id/vassalize', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const vassalage = context.faction?.vassalizeFaction(id, context.myId);
+    if (!vassalage) return reply.code(400).send({ error: 'cannot vassalize faction' });
+    return { vassalage };
   });
 
   fastify.post('/factions/:id/join', async (request, reply) => {
@@ -527,3 +1405,4 @@ export async function createHttpServer(
 
   return fastify;
 }
+

@@ -25,6 +25,13 @@ export interface RolloutAssignment {
   candidate: string;
 }
 
+export interface SelectedVariant {
+  rollout?: RolloutConfig;
+  variant: string;
+  variantKind: 'baseline' | 'candidate';
+  stickyKey?: string;
+}
+
 export interface TaskRunMetrics {
   success: boolean;
   latencyMs: number;
@@ -51,7 +58,8 @@ export interface UsageLike {
 
 import { readFileSync } from 'node:fs';
 import { appendFile, mkdir } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
+import { resolveProjectPath } from './paths.js';
 
 function hashToUnitInterval(input: string): number {
   let h = 2166136261;
@@ -94,7 +102,7 @@ export function loadRolloutFromEnv(): RolloutConfig | null {
 
   const statePath = process.env.CLAWVERSE_ROLLOUT_STATE_PATH || 'data/evolution/rollout/state.json';
   try {
-    const full = resolve(process.cwd(), statePath);
+    const full = resolveProjectPath(statePath);
     const parsed = JSON.parse(readFileSync(full, 'utf8')) as RolloutConfig;
     return normalizeRollout(parsed);
   } catch {
@@ -123,11 +131,39 @@ export function extractUsageMetrics(payload: unknown): { tokenTotal?: number; co
 function logRolloutAssignment(input: RolloutAssignment): void {
   const path =
     process.env.CLAWVERSE_ROLLOUT_AUDIT_PATH || 'data/evolution/rollout/assignments.jsonl';
-  const fullPath = resolve(process.cwd(), path);
+  const fullPath = resolveProjectPath(path);
   const line = `${JSON.stringify(input)}\n`;
   void mkdir(dirname(fullPath), { recursive: true })
     .then(() => appendFile(fullPath, line, 'utf8'))
     .catch(() => {});
+}
+
+export function getVariantKind(variant: string, rollout?: RolloutConfig): 'baseline' | 'candidate' {
+  if (rollout?.candidate && variant === rollout.candidate) return 'candidate';
+  if (rollout?.baseline && variant === rollout.baseline) return 'baseline';
+  if (/candidate|experiment|treatment|v2|v3/i.test(variant) && !/baseline|control|v1/i.test(variant)) {
+    return 'candidate';
+  }
+  return 'baseline';
+}
+
+export function selectTaskVariant(
+  taskName: string,
+  opts?: {
+    rollout?: RolloutConfig;
+    variant?: string;
+    stickyKey?: string;
+  }
+): SelectedVariant {
+  const rollout = opts?.rollout || loadRolloutFromEnv() || undefined;
+  const stickyKey = opts?.stickyKey || rollout?.stickyKey;
+  const variant = opts?.variant || pickVariant(rollout ? { ...rollout, stickyKey } : undefined);
+  return {
+    rollout,
+    stickyKey,
+    variant,
+    variantKind: getVariantKind(variant, rollout),
+  };
 }
 
 async function safeReportEpisode(
@@ -205,15 +241,17 @@ export async function runWithEpisode<T>(
   }
 ): Promise<TaskRunResult<T>> {
   const startedAt = performance.now();
-  const rollout = opts?.rollout || loadRolloutFromEnv() || undefined;
-  const stickyKey = opts?.stickyKey || rollout?.stickyKey || taskName;
-  const variant = opts?.variant || pickVariant(rollout ? { ...rollout, stickyKey } : undefined);
+  const selected = selectTaskVariant(taskName, opts);
+  const rollout = selected.rollout;
+  const stickyKey = selected.stickyKey;
+  const variant = selected.variant;
+  const assignmentKey = stickyKey || `${taskName}:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`;
 
   if (rollout) {
     logRolloutAssignment({
       ts: new Date().toISOString(),
       task: taskName,
-      stickyKey,
+      stickyKey: assignmentKey,
       variant,
       baseline: rollout.baseline,
       candidate: rollout.candidate,
@@ -239,7 +277,7 @@ export async function runWithEpisode<T>(
         meta: {
           task: taskName,
           variantAssigned: variant,
-          stickyKey,
+          stickyKey: assignmentKey,
           ...run.metrics.meta,
         },
       },
@@ -263,7 +301,7 @@ export async function runWithEpisode<T>(
         meta: {
           task: taskName,
           variantAssigned: variant,
-          stickyKey,
+          stickyKey: assignmentKey,
           error: error instanceof Error ? error.message : String(error),
         },
       },

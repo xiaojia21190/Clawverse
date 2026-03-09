@@ -110,3 +110,18 @@ test('state persists across instances', async () => {
     await n2.destroy();
   } finally { cleanup(); }
 });
+
+
+test('tick supports per-need decay multipliers', async () => {
+  const { dbPath, cleanup } = makeTmp();
+  try {
+    const needs = new NeedsSystem(3_600_000, { dbPath });
+    needs.tick({ social: 0.5, creative: 0 });
+    const state = needs.getNeeds();
+    assert.equal(state.social, 55);
+    assert.equal(state.creative, 80);
+    assert.equal(state.tasked, 30);
+    assert.equal(state.wanderlust, 30);
+    await needs.destroy();
+  } finally { cleanup(); }
+});

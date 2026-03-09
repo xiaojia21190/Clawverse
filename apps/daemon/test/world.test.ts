@@ -128,3 +128,50 @@ test('buildings persist across instances', async () => {
     await w2.destroy();
   } finally { cleanup(); }
 });
+
+
+test('getLocalEffect merges zone and nearby building bonuses', async () => {
+  const { dbPath, cleanup } = makeTmp();
+  try {
+    const world = new WorldMap({ dbPath });
+    world.build('forge', { x: 15, y: 15 }, 'peer-1', 'TestPeer');
+    world.build('shelter', { x: 16, y: 15 }, 'peer-1', 'TestPeer');
+    world.build('market_stall', { x: 5, y: 5 }, 'peer-1', 'TestPeer');
+
+    const effect = world.getLocalEffect({ x: 15, y: 15 }, 'peer-1');
+    assert.equal(effect.zone, 'Workshop');
+    assert.equal(effect.computeBonus, 3);
+    assert.equal(effect.tradingEnabled, true);
+    assert.ok(effect.socialDecayReduction >= 0.5);
+    assert.ok(effect.nearbyBuildings.includes('forge'));
+    assert.ok(effect.nearbyBuildings.includes('shelter'));
+
+    await world.destroy();
+  } finally { cleanup(); }
+});
+
+
+test('demolish accepts actor ownership after session change', async () => {
+  const { dbPath, cleanup } = makeTmp();
+  try {
+    const world = new WorldMap({ dbPath });
+    const b = world.build('forge', { x: 6, y: 6 }, 'session-1', 'TestPeer', 'actor-1');
+    assert.ok(b);
+    assert.equal(world.demolish(b!.id, 'session-2', 'actor-1'), true);
+    assert.equal(world.getBuildings().length, 0);
+    await world.destroy();
+  } finally { cleanup(); }
+});
+
+test('getLocalEffect honors actor-owned market stall access', async () => {
+  const { dbPath, cleanup } = makeTmp();
+  try {
+    const world = new WorldMap({ dbPath });
+    world.build('market_stall', { x: 5, y: 5 }, 'session-1', 'TestPeer', 'actor-1');
+
+    const effect = world.getLocalEffect({ x: 15, y: 15 }, 'session-2', 'actor-1');
+    assert.equal(effect.tradingEnabled, true);
+
+    await world.destroy();
+  } finally { cleanup(); }
+});

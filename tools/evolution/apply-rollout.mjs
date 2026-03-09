@@ -1,53 +1,53 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getProjectRoot } from './_paths.mjs';
+import { applyHealthGateToState, evaluateHealthGateFromSqlite } from './_health-gate.mjs';
+import {
+  applyRolloutDecision,
+  buildEmptyHealthGateState,
+  buildRolloutEnvLine,
+  getCanaryWindowStatus,
+  getHealthGateState,
+  readEvolutionConfig,
+  readRolloutState,
+  writeRolloutArtifacts,
+} from './_rollout.mjs';
 
-const root = process.cwd();
-const config = JSON.parse(readFileSync(join(root, 'tools/evolution/config.json'), 'utf8'));
+const root = getProjectRoot();
+const config = readEvolutionConfig(root);
 const latest = readFileSync(join(root, 'data/evolution/proposals/LATEST'), 'utf8').trim().replace(/\.json$/, '');
 const decision = JSON.parse(readFileSync(join(root, `data/evolution/decisions/${latest}.json`), 'utf8'));
 
-const statePath = join(root, 'data/evolution/rollout/state.json');
 mkdirSync(join(root, 'data/evolution/rollout'), { recursive: true });
 
-let state = {
+let current = readRolloutState(root) || {
   baseline: config.baseline,
   candidate: config.candidate,
   candidateRatio: 0,
   updatedAt: new Date().toISOString(),
+  lastRatioChangeAt: null,
+  canaryLockedUntil: null,
+  ...buildEmptyHealthGateState(),
 };
 
-try {
-  state = JSON.parse(readFileSync(statePath, 'utf8'));
-} catch {}
+const canary = getCanaryWindowStatus(current, config);
+const healthGate = getHealthGateState(current);
+const needsHealthRefresh = decision.decision === 'adopt_candidate'
+  && Number(current.candidateRatio || 0) > 0
+  && !canary.active
+  && !healthGate.fresh;
 
-const policy = config.rolloutPolicy || {
-  startRatio: 0.1,
-  stepUp: 0.2,
-  maxRatio: 1,
-  stepDownOnFail: 0.1,
-};
-
-const prevRatio = state.candidateRatio;
-
-if (decision.decision === 'adopt_candidate') {
-  if (state.candidate !== config.candidate || state.baseline !== config.baseline) {
-    state.baseline = config.baseline;
-    state.candidate = config.candidate;
-    state.candidateRatio = policy.startRatio;
-  } else {
-    state.candidateRatio = Math.min(policy.maxRatio, state.candidateRatio + policy.stepUp);
-  }
-} else if (decision.decision === 'keep_baseline') {
-  state.candidateRatio = Math.max(0, state.candidateRatio - policy.stepDownOnFail);
-} else if (decision.decision === 'hold') {
-  // keep ratio unchanged when sample size is insufficient
-  state.candidateRatio = state.candidateRatio;
+if (needsHealthRefresh) {
+  const healthResult = evaluateHealthGateFromSqlite(current, config);
+  current = applyHealthGateToState(current, healthResult);
+  writeRolloutArtifacts(root, current);
+  console.log(`[apply-rollout] refreshed health gate: ${healthResult.status}`);
 }
 
-state.updatedAt = new Date().toISOString();
-writeFileSync(statePath, JSON.stringify(state, null, 2));
+const rollout = applyRolloutDecision(current, config, decision);
+const state = rollout.state;
+writeRolloutArtifacts(root, state);
 
-// Append to rollout history
 appendFileSync(
   join(root, 'data/evolution/rollout/history.jsonl'),
   JSON.stringify({
@@ -56,18 +56,32 @@ appendFileSync(
     proposalId: decision.proposalId,
     baseline: state.baseline,
     candidate: state.candidate,
-    prevRatio,
+    prevRatio: rollout.prevRatio,
     ratio: state.candidateRatio,
+    severeFailure: rollout.severeFailure,
+    rollbackApplied: rollout.rollbackApplied,
+    canaryHoldApplied: rollout.canaryHoldApplied,
+    canaryLockedUntil: state.canaryLockedUntil,
+    healthGateStatus: rollout.healthGate.status,
+    healthGateFresh: rollout.healthGate.fresh,
+    healthGateHoldApplied: rollout.healthGateHoldApplied,
+    healthRollbackApplied: rollout.healthRollbackApplied,
+    lastHealthCheckAt: state.lastHealthCheckAt,
   }) + '\n',
 );
 
-const envPayload = {
-  baseline: state.baseline,
-  candidate: state.candidate,
-  candidateRatio: state.candidateRatio,
-};
-
-const envLine = `export CLAWVERSE_ROLLOUT_JSON='${JSON.stringify(envPayload)}'`;
-writeFileSync(join(root, 'data/evolution/rollout/latest.env'), `${envLine}\n`);
+const envLine = buildRolloutEnvLine(state);
 console.log(`rollout updated: ratio=${state.candidateRatio}`);
+if (rollout.rollbackApplied) {
+  console.log('rollout rollback applied: severe candidate regression detected');
+}
+if (rollout.healthRollbackApplied) {
+  console.log('rollout health rollback applied: post-rollout health gate marked candidate as critical');
+}
+if (rollout.canaryHoldApplied) {
+  console.log(`rollout canary hold: observe current ratio until ${state.canaryLockedUntil}`);
+}
+if (rollout.healthGateHoldApplied) {
+  console.log(`rollout health hold: gate=${rollout.healthGate.status}`);
+}
 console.log(envLine);

@@ -10,14 +10,14 @@
  *   5. POST /move to daemon
  */
 
-import { resolve } from 'node:path';
-import { createTaskRunner } from './index.js';
+import { createTaskRunner, selectTaskVariant } from './index.js';
 import { llmGenerate, llmProviderInfo } from './llm.js';
 import { FileWriteQueue } from './io-queue.js';
+import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const WALK_INTERVAL_MS = Number(process.env.CLAWVERSE_WALK_INTERVAL_MS || 5 * 60_000);
-const WALK_LOG = resolve(process.cwd(), 'data/social/walk.log');
+const WALK_LOG = resolveProjectPath('data/social/walk.log');
 const GRID_SIZE = 40;
 
 const runner = createTaskRunner({ source: 'task-runtime' });
@@ -44,14 +44,14 @@ function locationName(pos: Position): string {
   return 'Residential';
 }
 
-function buildPrompt(me: StatusResp, peers: PeerInfo[]): string {
+function buildPrompt(me: StatusResp, peers: PeerInfo[], variantKind: 'baseline' | 'candidate'): string {
   const myPos = me.state.position;
   const myLoc = locationName(myPos);
   const nearby = peers
-    .filter((p) => p.id !== me.id)
-    .map((p) => {
-      const dist = Math.round(Math.sqrt(Math.pow(myPos.x - p.position.x, 2) + Math.pow(myPos.y - p.position.y, 2)));
-      return `  - ${p.name} (${p.dna.archetype}, ${p.mood}) at (${p.position.x},${p.position.y}) — ${locationName(p.position)}, dist ${dist}`;
+    .filter((peer) => peer.id !== me.id)
+    .map((peer) => {
+      const dist = Math.round(Math.sqrt(Math.pow(myPos.x - peer.position.x, 2) + Math.pow(myPos.y - peer.position.y, 2)));
+      return `  - ${peer.name} (${peer.dna.archetype}, ${peer.mood}) at (${peer.position.x},${peer.position.y}) — ${locationName(peer.position)}, dist ${dist}`;
     })
     .join('\n');
 
@@ -62,31 +62,35 @@ function buildPrompt(me: StatusResp, peers: PeerInfo[]): string {
     Ranger: 'You wander freely, often to Park or Tavern edges.',
   };
   const archetype = me.state.dna?.archetype ?? 'Scholar';
-  const archetypeHint = archetypeGoals[archetype] ?? archetypeGoals['Scholar'];
+  const archetypeHint = archetypeGoals[archetype] ?? archetypeGoals.Scholar;
+
+  const strategy = variantKind === 'candidate'
+    ? 'Balance archetype preference, current mood, and social opportunities. Prefer purposeful movement toward peers or interesting zones instead of drifting randomly.'
+    : 'Choose your next destination mainly from archetype preference and nearby peers.';
 
   return [
     `You are ${me.state.name}, a ${archetype} AI agent in Clawverse virtual town.`,
     `Current position: (${myPos.x}, ${myPos.y}) — ${myLoc}`,
     `Current mood: ${me.mood}`,
-    `${archetypeHint}`,
-    ``,
-    `Other agents on the map:`,
+    archetypeHint,
+    '',
+    'Other agents on the map:',
     nearby || '  (none visible)',
-    ``,
-    `Town zones (40x40 grid):`,
-    `  Plaza (0-9, 0-9), Market (10-19, 0-9), Library (0-9, 10-19),`,
-    `  Workshop (10-19, 10-19), Park (0-9, 20-29), Tavern (10-19, 20-29), Residential (rest)`,
-    ``,
-    `Choose your next destination. Consider your archetype preference and nearby peers.`,
-    `Reply with ONLY valid JSON, no explanation: {"x": <0-39>, "y": <0-39>}`,
+    '',
+    'Town zones (40x40 grid):',
+    '  Plaza (0-9, 0-9), Market (10-19, 0-9), Library (0-9, 10-19),',
+    '  Workshop (10-19, 10-19), Park (0-9, 20-29), Tavern (10-19, 20-29), Residential (rest)',
+    '',
+    strategy,
+    'Reply with ONLY valid JSON, no explanation: {"x": <0-39>, "y": <0-39>}',
   ].join('\n');
 }
 
 function parsePosition(output: string): Position | null {
   const match = output.match(/\{[^}]*"x"\s*:\s*(\d+)[^}]*"y"\s*:\s*(\d+)[^}]*\}/);
   if (!match) return null;
-  const x = Math.max(0, Math.min(GRID_SIZE - 1, parseInt(match[1])));
-  const y = Math.max(0, Math.min(GRID_SIZE - 1, parseInt(match[2])));
+  const x = Math.max(0, Math.min(GRID_SIZE - 1, parseInt(match[1], 10)));
+  const y = Math.max(0, Math.min(GRID_SIZE - 1, parseInt(match[2], 10)));
   return { x, y };
 }
 
@@ -99,7 +103,10 @@ async function walk(): Promise<void> {
       fetch(`${DAEMON_URL}/status`, { signal: AbortSignal.timeout(5_000) }),
       fetch(`${DAEMON_URL}/peers`, { signal: AbortSignal.timeout(5_000) }),
     ]);
-    if (!statusRes.ok || !peersRes.ok) { log('Failed to fetch status/peers'); return; }
+    if (!statusRes.ok || !peersRes.ok) {
+      log('Failed to fetch status/peers');
+      return;
+    }
     me = await statusRes.json() as StatusResp;
     peersData = await peersRes.json() as PeersResp;
   } catch (err) {
@@ -107,9 +114,15 @@ async function walk(): Promise<void> {
     return;
   }
 
-  if (!me.state?.position) { log('No position in status'); return; }
+  if (!me.state?.position) {
+    log('No position in status');
+    return;
+  }
 
-  const prompt = buildPrompt(me, peersData.all ?? []);
+  const selected = selectTaskVariant('walk-decision', {
+    stickyKey: `walk:${me.id}:${me.state.position.x}:${me.state.position.y}:${(peersData.all ?? []).length}`,
+  });
+  const prompt = buildPrompt(me, peersData.all ?? [], selected.variantKind);
 
   await runner.run('walk-decision', async () => {
     const stdout = await llmGenerate(prompt, { maxTokens: 128 });
@@ -126,6 +139,10 @@ async function walk(): Promise<void> {
 
     log(`Moved to (${newPos.x}, ${newPos.y}) — ${locationName(newPos)}`);
     return newPos;
+  }, {
+    stickyKey: selected.stickyKey,
+    variant: selected.variant,
+    meta: { promptMode: selected.variantKind },
   }).catch((err: Error) => log(`Walk failed: ${err.message}`));
 }
 

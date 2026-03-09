@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getProjectRoot } from './_paths.mjs';
 
-const root = process.cwd();
+const root = getProjectRoot();
 const summariesDir = join(root, 'data/evolution/summaries');
 const latestSummaryPath = join(summariesDir, 'LATEST.md');
 

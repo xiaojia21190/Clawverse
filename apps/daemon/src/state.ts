@@ -7,6 +7,7 @@ import {
   HardwareMetrics,
   DNA,
   VolatileState,
+  MarketProfile,
 } from '@clawverse/types';
 import { logger } from './logger.js';
 import { ClawverseDbHandle, openClawverseDb } from './sqlite.js';
@@ -25,9 +26,21 @@ const DEFAULT_DNA: DNA = {
   appearance: { form: 'octopus', primaryColor: '#888888', secondaryColor: '#444444', accessories: [] },
 };
 
+function cloneMarketProfile(market?: MarketProfile): MarketProfile | undefined {
+  if (!market) return undefined;
+  return {
+    resources: market.resources ? { ...market.resources } : undefined,
+    inventory: market.inventory ? { ...market.inventory } : undefined,
+    updatedAt: market.updatedAt,
+  };
+}
+
 // Structural peer state stored in Yjs (DNA, name, position)
 interface StructuralState {
   id: string;
+  actorId?: string;
+  sessionId?: string;
+  spawnDistrict?: string;
   name: string;
   position: { x: number; y: number };
   dna: DNA;
@@ -64,11 +77,14 @@ export class StateStore {
   }
 
   // Update structural (Yjs-synced) state: DNA, name, position
-  updateMyStructure(patch: Partial<Pick<PeerState, 'name' | 'position' | 'dna'>>): void {
+  updateMyStructure(patch: Partial<Pick<PeerState, 'name' | 'position' | 'dna' | 'actorId' | 'sessionId' | 'spawnDistrict'>>): void {
     if (!this.myId) return;
     const existing = this.structural.get(this.myId);
     this.structural.set(this.myId, {
       id: this.myId,
+      actorId: patch.actorId ?? patch.dna?.id ?? existing?.actorId ?? existing?.dna?.id ?? this.myId,
+      sessionId: patch.sessionId ?? existing?.sessionId ?? this.myId,
+      spawnDistrict: patch.spawnDistrict ?? existing?.spawnDistrict,
       name: patch.name ?? existing?.name ?? this.myId.slice(0, 8),
       position: patch.position ?? existing?.position ?? { x: 0, y: 0 },
       dna: patch.dna ?? existing?.dna ?? { ...DEFAULT_DNA, id: this.myId },
@@ -86,15 +102,26 @@ export class StateStore {
 
   // Legacy: used by HTTP /move and heartbeat handler
   updateMyState(patch: Partial<PeerState>, silent = false): void {
-    if (patch.mood !== undefined || patch.hardware !== undefined) {
-      this.updateMyVolatile({
+    if (patch.mood !== undefined || patch.hardware !== undefined || patch.market !== undefined) {
+      const volatilePatch: Partial<VolatileState> = {
         mood: patch.mood,
         cpuUsage: patch.hardware?.cpuUsage,
         ramUsage: patch.hardware?.ramUsage,
-      });
+      };
+      if (patch.market !== undefined) {
+        volatilePatch.market = cloneMarketProfile(patch.market);
+      }
+      this.updateMyVolatile(volatilePatch);
     }
     if (!silent && (patch.name !== undefined || patch.position !== undefined || patch.dna !== undefined)) {
-      this.updateMyStructure({ name: patch.name, position: patch.position, dna: patch.dna });
+      this.updateMyStructure({
+        name: patch.name,
+        position: patch.position,
+        dna: patch.dna,
+        actorId: patch.actorId,
+        sessionId: patch.sessionId,
+        spawnDistrict: patch.spawnDistrict,
+      });
     }
   }
 
@@ -105,10 +132,13 @@ export class StateStore {
     this.volatile.set(peerId, { ...existing, ...v, lastHeartbeat: Date.now() });
   }
 
-  updatePeerStructure(peerId: string, patch: Partial<Pick<PeerState, 'name' | 'position' | 'dna'>>): void {
+  updatePeerStructure(peerId: string, patch: Partial<Pick<PeerState, 'name' | 'position' | 'dna' | 'actorId' | 'sessionId' | 'spawnDistrict'>>): void {
     const existing = this.structural.get(peerId);
     this.structural.set(peerId, {
       id: peerId,
+      actorId: patch.actorId ?? patch.dna?.id ?? existing?.actorId ?? existing?.dna?.id ?? peerId,
+      sessionId: patch.sessionId ?? existing?.sessionId ?? peerId,
+      spawnDistrict: patch.spawnDistrict ?? existing?.spawnDistrict,
       name: patch.name ?? existing?.name ?? peerId.slice(0, 8),
       position: patch.position ?? existing?.position ?? { x: 0, y: 0 },
       dna: patch.dna ?? existing?.dna ?? { ...DEFAULT_DNA, id: peerId },
@@ -117,15 +147,26 @@ export class StateStore {
 
   // Legacy compatibility
   updatePeerState(peerId: string, state: Partial<PeerState>): void {
-    if (state.mood !== undefined || state.hardware !== undefined) {
-      this.updatePeerVolatile(peerId, {
+    if (state.mood !== undefined || state.hardware !== undefined || state.market !== undefined) {
+      const volatilePatch: Partial<VolatileState> = {
         mood: state.mood,
         cpuUsage: state.hardware?.cpuUsage,
         ramUsage: state.hardware?.ramUsage,
-      });
+      };
+      if (state.market !== undefined) {
+        volatilePatch.market = cloneMarketProfile(state.market);
+      }
+      this.updatePeerVolatile(peerId, volatilePatch);
     }
     if (state.name !== undefined || state.position !== undefined || state.dna !== undefined) {
-      this.updatePeerStructure(peerId, { name: state.name, position: state.position, dna: state.dna });
+      this.updatePeerStructure(peerId, {
+        name: state.name,
+        position: state.position,
+        dna: state.dna,
+        actorId: state.actorId,
+        sessionId: state.sessionId,
+        spawnDistrict: state.spawnDistrict,
+      });
     }
   }
 
@@ -144,6 +185,9 @@ export class StateStore {
     const v = this.volatile.get(peerId);
     return {
       id: s.id,
+      actorId: s.actorId ?? s.dna.id ?? s.id,
+      sessionId: s.sessionId ?? s.id,
+      spawnDistrict: s.spawnDistrict,
       name: s.name,
       position: s.position,
       dna: s.dna,
@@ -154,6 +198,7 @@ export class StateStore {
         ramUsage: v?.ramUsage ?? 0,
       },
       lastUpdate: new Date(v?.lastHeartbeat ?? 0),
+      market: cloneMarketProfile(v?.market),
     };
   }
 

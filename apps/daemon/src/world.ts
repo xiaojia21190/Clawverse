@@ -30,6 +30,11 @@ export interface ZoneEffect {
   tradingEnabled: boolean;
 }
 
+export interface LocalWorldEffect extends ZoneEffect {
+  zone: string;
+  nearbyBuildings: BuildingType[];
+}
+
 const ZONE_EFFECTS: Record<string, ZoneEffect> = {
   Plaza:       { computeBonus: 0, xpBonus: 0,   socialDecayReduction: 0,   tradingEnabled: false },
   Market:      { computeBonus: 0, xpBonus: 0,   socialDecayReduction: 0,   tradingEnabled: true  },
@@ -43,9 +48,10 @@ const ZONE_EFFECTS: Record<string, ZoneEffect> = {
 const BUILDING_EFFECTS: Record<BuildingType, string> = {
   forge:        '+2 compute/tick within radius 3',
   archive:      '+1 XP/interaction within radius 3',
-  beacon:       'Broadcasts position to all peers',
+  beacon:       'Broadcasts position to all peers and provides raid early warning',
   market_stall: 'Enables trading outside Market zone',
   shelter:      'Reduces mood decay by 0.5x within radius 2',
+  watchtower:   'Adds spotters and layered defenses against raids',
 };
 
 export const BUILDING_COST: Record<BuildingType, { compute: number; storage: number }> = {
@@ -54,7 +60,12 @@ export const BUILDING_COST: Record<BuildingType, { compute: number; storage: num
   beacon:       { compute: 25, storage: 15 },
   market_stall: { compute: 15, storage: 25 },
   shelter:      { compute: 20, storage: 30 },
+  watchtower:   { compute: 35, storage: 25 },
 };
+
+function withinRadius(left: Position, right: Position, radius: number): boolean {
+  return Math.max(Math.abs(left.x - right.x), Math.abs(left.y - right.y)) <= radius;
+}
 
 function zoneName(pos: Position): string {
   if (pos.x < 10 && pos.y < 10) return 'Plaza';
@@ -86,7 +97,7 @@ export class WorldMap {
     });
   }
 
-  build(type: BuildingType, position: Position, ownerId: string, ownerName: string): Building | null {
+  build(type: BuildingType, position: Position, ownerId: string, ownerName: string, ownerActorId?: string): Building | null {
     const cell = position.y * GRID + position.x;
     if (this.terrain[cell] === 'water') return null;
     const occupied = Array.from(this.buildings.values()).some(
@@ -96,7 +107,7 @@ export class WorldMap {
 
     const building: Building = {
       id: `bld-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-      type, position, ownerId, ownerName,
+      type, position, ownerId, ownerActorId, ownerName,
       effect: BUILDING_EFFECTS[type],
       createdAt: new Date().toISOString(),
     };
@@ -111,9 +122,9 @@ export class WorldMap {
     return building;
   }
 
-  demolish(id: string, requesterId: string): boolean {
+  demolish(id: string, requesterId: string, requesterActorId?: string): boolean {
     const b = this.buildings.get(id);
-    if (!b || b.ownerId !== requesterId) return false;
+    if (!b || !this.isOwnedBy(b, requesterId, requesterActorId)) return false;
     if (this.yjsBuildings) this.yjsBuildings.delete(id);
     else this.buildings.delete(id);
     this._save();
@@ -124,7 +135,46 @@ export class WorldMap {
     return ZONE_EFFECTS[zoneName(position)] ?? ZONE_EFFECTS['Residential'];
   }
 
+  getLocalEffect(position: Position, ownerId?: string, ownerActorId?: string): LocalWorldEffect {
+    const zone = zoneName(position);
+    const effect: LocalWorldEffect = {
+      zone,
+      ...this.getZoneEffect(position),
+      nearbyBuildings: [],
+    };
+
+    for (const building of this.buildings.values()) {
+      if (building.type === 'forge' && withinRadius(position, building.position, 3)) {
+        effect.computeBonus += 2;
+        effect.nearbyBuildings.push(building.type);
+      } else if (building.type === 'archive' && withinRadius(position, building.position, 3)) {
+        effect.xpBonus += 1;
+        effect.nearbyBuildings.push(building.type);
+      } else if (building.type === 'shelter' && withinRadius(position, building.position, 2)) {
+        effect.socialDecayReduction += 0.5;
+        effect.nearbyBuildings.push(building.type);
+      } else if (building.type === 'market_stall' && this.isOwnedBy(building, ownerId, ownerActorId)) {
+        effect.tradingEnabled = true;
+        effect.nearbyBuildings.push(building.type);
+      }
+    }
+
+    effect.socialDecayReduction = Math.min(0.8, effect.socialDecayReduction);
+    return effect;
+  }
+
   getBuildingCost(type: BuildingType) { return BUILDING_COST[type]; }
+
+  isOwnedBy(building: Building, ownerId?: string, ownerActorId?: string): boolean {
+    return !!(
+      (ownerActorId && building.ownerActorId === ownerActorId)
+      || (ownerId && building.ownerId === ownerId)
+    );
+  }
+
+  getOwnedBuildings(ownerId?: string, ownerActorId?: string): Building[] {
+    return this.getBuildings().filter((building) => this.isOwnedBy(building, ownerId, ownerActorId));
+  }
 
   getMap() {
     return {

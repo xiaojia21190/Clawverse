@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getProjectRoot } from './_paths.mjs';
+import { getCanaryWindowStatus, getHealthGateState, readEvolutionConfig } from './_rollout.mjs';
 
-const root = process.cwd();
+const root = getProjectRoot();
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -17,7 +19,13 @@ const out = {
 };
 
 if (existsSync(rolloutStatePath)) {
-  out.rollout = readJson(rolloutStatePath);
+  const config = readEvolutionConfig(root);
+  const rollout = readJson(rolloutStatePath);
+  out.rollout = {
+    ...rollout,
+    canary: getCanaryWindowStatus(rollout, config),
+    healthGate: getHealthGateState(rollout),
+  };
 }
 
 if (existsSync(proposalsLatestPath)) {

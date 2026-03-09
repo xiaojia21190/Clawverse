@@ -8,14 +8,14 @@
  *   3. POST /collab/resolve with result
  */
 
-import { resolve } from 'node:path';
-import { createTaskRunner } from './index.js';
+import { createTaskRunner, selectTaskVariant } from './index.js';
 import { llmGenerate, llmProviderInfo } from './llm.js';
 import { FileWriteQueue } from './io-queue.js';
+import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_COLLAB_POLL_MS || 60_000);
-const COLLAB_LOG = resolve(process.cwd(), 'data/collab/worker.log');
+const COLLAB_LOG = resolveProjectPath('data/collab/worker.log');
 
 const runner = createTaskRunner({ source: 'task-runtime' });
 const io = new FileWriteQueue({ appendFlushMs: 200 });
@@ -31,6 +31,22 @@ interface CollabTask {
   fromName: string;
   context: string;
   question: string;
+}
+
+function buildPrompt(task: CollabTask, variantKind: 'baseline' | 'candidate'): string {
+  const instruction = variantKind === 'candidate'
+    ? 'Answer concisely and helpfully. Give one direct recommendation and one brief caution or follow-up if useful.'
+    : 'Answer concisely and helpfully.';
+
+  return [
+    `${task.fromName} asks for your help:`,
+    '',
+    task.context,
+    '',
+    task.question,
+    '',
+    instruction,
+  ].join('\n');
 }
 
 async function poll(): Promise<void> {
@@ -50,16 +66,8 @@ async function poll(): Promise<void> {
 
   for (const task of tasks) {
     log(`  Task from ${task.fromName}: "${task.question.slice(0, 60)}"`);
-
-    const prompt = [
-      `${task.fromName} asks for your help:`,
-      ``,
-      task.context,
-      ``,
-      task.question,
-      ``,
-      `Answer concisely and helpfully.`,
-    ].join('\n');
+    const selected = selectTaskVariant('collab-execution', { stickyKey: task.id });
+    const prompt = buildPrompt(task, selected.variantKind);
 
     let result = '';
     let success = false;
@@ -69,6 +77,10 @@ async function poll(): Promise<void> {
         const text = await llmGenerate(prompt, { maxTokens: 512 });
         if (!text) throw new Error('Empty LLM response');
         return text;
+      }, {
+        stickyKey: task.id,
+        variant: selected.variant,
+        meta: { promptMode: selected.variantKind },
       });
       success = true;
     } catch (err) {

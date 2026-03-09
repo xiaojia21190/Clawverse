@@ -25,6 +25,7 @@ const BUILDINGS = [
   { type: 'beacon', glyph: 'BC', label: 'Beacon', cost: { compute: 25, storage: 15 }, effect: 'Broadcast local position' },
   { type: 'market_stall', glyph: 'MK', label: 'Market Stall', cost: { compute: 15, storage: 25 }, effect: 'Enable distributed trade' },
   { type: 'shelter', glyph: 'SH', label: 'Shelter', cost: { compute: 20, storage: 30 }, effect: 'Reduce mood decay nearby' },
+  { type: 'watchtower', glyph: 'WT', label: 'Watchtower', cost: { compute: 35, storage: 25 }, effect: 'Cut raid pressure and blunt incoming damage' },
 ];
 </script>
 

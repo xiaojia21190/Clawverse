@@ -22,6 +22,25 @@ export async function getRoot(): Promise<protobuf.Root> {
   return root;
 }
 
+export interface IMarketResources {
+  compute?: number;
+  storage?: number;
+  bandwidth?: number;
+  reputation?: number;
+}
+
+export interface IMarketInventory {
+  dataShard?: number;
+  alloyFrame?: number;
+  relayPatch?: number;
+}
+
+export interface IMarketProfile {
+  resources?: IMarketResources;
+  inventory?: IMarketInventory;
+  updatedAtMs?: number | Long;
+}
+
 export interface IHeartbeat {
   peerId: string;
   cpuUsage: number;
@@ -30,6 +49,7 @@ export interface IHeartbeat {
   y: number;
   mood: string;
   timestamp: number | Long;
+  market?: IMarketProfile;
 }
 
 export interface IYjsSync {

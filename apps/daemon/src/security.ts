@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolveProjectPath } from './paths.js';
 
 export interface SecurityConfig {
   allowedPeers: string[];
@@ -29,7 +29,7 @@ export function loadSecurityConfig(): SecurityConfig {
   };
 
   const filePath = process.env.CLAWVERSE_SECURITY_CONFIG_PATH || 'data/security/network.json';
-  const full = resolve(process.cwd(), filePath);
+  const full = resolveProjectPath(filePath);
 
   if (!existsSync(full)) {
     return fromEnv;

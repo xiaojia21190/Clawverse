@@ -17,6 +17,8 @@ const INITIAL_NEED_VALUE = 80;
 const MOOD_SCALE: Mood[] = ['idle', 'working', 'busy', 'stressed', 'distressed'];
 const NEED_KEYS: NeedKey[] = ['social', 'tasked', 'wanderlust', 'creative'];
 
+export type NeedDecayModifiers = Partial<Record<NeedKey, number>>;
+
 export class NeedsSystem {
   private readonly dbHandle: ClawverseDbHandle;
   private state: NeedsState = {
@@ -33,9 +35,10 @@ export class NeedsSystem {
     this._load();
   }
 
-  tick(): void {
+  tick(modifiers: NeedDecayModifiers = {}): void {
     for (const key of NEED_KEYS) {
-      this.state[key] = Math.max(0, this.state[key] - this.decayPerTick);
+      const multiplier = Math.max(0, modifiers[key] ?? 1);
+      this.state[key] = Math.max(0, this.state[key] - this.decayPerTick * multiplier);
     }
     this.state.updatedAt = new Date().toISOString();
     this._save();

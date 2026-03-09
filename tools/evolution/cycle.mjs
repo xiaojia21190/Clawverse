@@ -1,23 +1,26 @@
 import { execSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getProjectRoot } from './_paths.mjs';
+import { getCanaryWindowStatus, getHealthGateState, readEvolutionConfig } from './_rollout.mjs';
 
-const root = process.cwd();
+const root = getProjectRoot();
 const proposalsDir = join(root, 'data/evolution/proposals');
 const reportsDir = join(root, 'data/evolution/reports');
 const decisionsDir = join(root, 'data/evolution/decisions');
 const summaryDir = join(root, 'data/evolution/summaries');
+const rolloutStatePath = join(root, 'data/evolution/rollout/state.json');
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 5_000;
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runWithRetry(cmd, stepName) {
   let lastErr;
-  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt += 1) {
     try {
       execSync(cmd, { stdio: 'inherit' });
       return;
@@ -38,7 +41,7 @@ async function sendFailureAlert(stepName, errorMsg) {
   const tgChat = process.env.CLAWVERSE_TELEGRAM_CHAT_ID;
   const webhook = process.env.CLAWVERSE_NOTIFY_WEBHOOK;
 
-  const text = `🚨 Clawverse Evolution FAILED\nStep: ${stepName}\nError: ${errorMsg.slice(0, 500)}\nTime: ${new Date().toISOString()}`;
+  const text = `[ALERT] Clawverse Evolution FAILED\nStep: ${stepName}\nError: ${errorMsg.slice(0, 500)}\nTime: ${new Date().toISOString()}`;
 
   const tasks = [];
   if (tgToken && tgChat) {
@@ -48,7 +51,7 @@ async function sendFailureAlert(stepName, errorMsg) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ chat_id: tgChat, text: text.slice(0, 4000) }),
         signal: AbortSignal.timeout(10_000),
-      }).catch((e) => console.error('[cycle] Telegram alert failed:', e.message))
+      }).catch((error) => console.error('[cycle] Telegram alert failed:', error.message)),
     );
   }
   if (webhook) {
@@ -58,7 +61,7 @@ async function sendFailureAlert(stepName, errorMsg) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text, source: 'clawverse-cycle-failure' }),
         signal: AbortSignal.timeout(10_000),
-      }).catch((e) => console.error('[cycle] Webhook alert failed:', e.message))
+      }).catch((error) => console.error('[cycle] Webhook alert failed:', error.message)),
     );
   }
 
@@ -73,6 +76,7 @@ async function main() {
     { cmd: 'node tools/evolution/propose.mjs', name: 'propose' },
     { cmd: 'node tools/evolution/evaluate.mjs', name: 'evaluate' },
     { cmd: 'node tools/evolution/decide.mjs', name: 'decide' },
+    { cmd: 'node tools/evolution/health-check.mjs', name: 'health-check' },
     { cmd: 'node tools/evolution/apply-rollout.mjs', name: 'apply-rollout' },
   ];
 
@@ -87,33 +91,52 @@ async function main() {
     }
   }
 
-  // Build summary
   const latest = readFileSync(join(proposalsDir, 'LATEST'), 'utf8').trim().replace(/\.json$/, '');
   const proposal = JSON.parse(readFileSync(join(proposalsDir, `${latest}.json`), 'utf8'));
   const report = JSON.parse(readFileSync(join(reportsDir, `${latest}.json`), 'utf8'));
   const decision = JSON.parse(readFileSync(join(decisionsDir, `${latest}.json`), 'utf8'));
 
+  let rolloutSummary = null;
+  if (existsSync(rolloutStatePath)) {
+    const config = readEvolutionConfig(root);
+    const rolloutState = JSON.parse(readFileSync(rolloutStatePath, 'utf8'));
+    const canary = getCanaryWindowStatus(rolloutState, config);
+    const healthGate = getHealthGateState(rolloutState);
+    rolloutSummary = {
+      candidateRatio: rolloutState.candidateRatio,
+      canary,
+      healthGate,
+      lastHealthCheckAt: rolloutState.lastHealthCheckAt ?? null,
+    };
+  }
+
   const md = [
-    `# Evolution Cycle Summary`,
-    ``,
+    '# Evolution Cycle Summary',
+    '',
     `- Proposal: ${proposal.id}`,
     `- Decision: **${decision.decision}**`,
     `- Passed: ${decision.passed}`,
     `- Evaluated At: ${report.evaluatedAt}`,
     `- Sources: ${(report.includeSources || []).join(', ')}`,
     `- Sample Size: ${report.sampleSize}`,
-    ``,
-    `## Deltas`,
+    '',
+    '## Deltas',
     `- successRate: ${report.deltas.successRate}`,
     `- avgLatencyMs: ${report.deltas.avgLatencyMs}`,
     `- avgTokenTotal: ${report.deltas.avgTokenTotal}`,
     `- avgCostUsd: ${report.deltas.avgCostUsd}`,
-    ``,
-    `## Checks`,
+    '',
+    '## Checks',
     `- successRate: ${decision.checks.successRate}`,
     `- latency: ${decision.checks.latency}`,
     `- tokens: ${decision.checks.tokens}`,
     `- cost: ${decision.checks.cost}`,
+    '',
+    '## Rollout State',
+    `- Ratio: ${rolloutSummary ? rolloutSummary.candidateRatio : 'n/a'}`,
+    `- Canary: ${rolloutSummary ? (rolloutSummary.canary.active ? `active (${rolloutSummary.canary.remainingMinutes}m remaining)` : 'inactive') : 'n/a'}`,
+    `- Health Gate: ${rolloutSummary ? rolloutSummary.healthGate.status : 'n/a'}`,
+    rolloutSummary?.lastHealthCheckAt ? `- Last Health Check: ${rolloutSummary.lastHealthCheckAt}` : '- Last Health Check: n/a',
   ].join('\n');
 
   mkdirSync(summaryDir, { recursive: true });

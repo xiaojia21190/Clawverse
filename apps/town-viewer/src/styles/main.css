@@ -1,50 +1,45 @@
-@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@400;500;600;700;800&display=swap');
 
 :root {
-  --font-display: 'Baloo 2', 'Trebuchet MS', sans-serif;
-  --font-body: 'Manrope', 'Segoe UI', sans-serif;
+  --font-display: 'Fira Sans', 'Segoe UI', sans-serif;
+  --font-body: 'Fira Sans', 'Segoe UI', sans-serif;
+  --font-code: 'Fira Code', Consolas, monospace;
 
-  --bg-1: #fff5e8;
-  --bg-2: #e6fbff;
-  --bg-3: #ffe3f0;
-  --bg-4: #f2f7ff;
+  --bg-1: #eef3f7;
+  --bg-2: #dde6ee;
+  --bg-3: #cad7e4;
+  --bg-4: #f7f9fb;
 
-  --surface: #f5f8ff;
+  --surface: #f7fafc;
   --surface-strong: #ffffff;
-  --surface-soft: #eef3ff;
+  --surface-soft: #edf3f8;
 
-  --text-strong: #25304f;
-  --text-body: #4f628e;
-  --text-muted: #7888ad;
+  --text-strong: #142033;
+  --text-body: #44556b;
+  --text-muted: #70829b;
 
-  --accent-coral: #ff6b6b;
-  --accent-sky: #3abff8;
-  --accent-mint: #10c9a8;
-  --accent-sun: #ffb703;
-  --accent-berry: #ff4da6;
+  --accent-coral: #d95f4f;
+  --accent-sky: #2563eb;
+  --accent-mint: #0f766e;
+  --accent-sun: #ca8a04;
+  --accent-berry: #b83280;
 
-  --state-good: #06d6a0;
-  --state-warn: #ff9f1c;
-  --state-bad: #ef476f;
+  --state-good: #0f766e;
+  --state-warn: #b7791f;
+  --state-bad: #b42343;
 
-  --line-soft: rgba(95, 118, 164, 0.16);
-  --line-strong: rgba(88, 112, 161, 0.28);
+  --line-soft: rgba(54, 74, 99, 0.14);
+  --line-strong: rgba(44, 62, 91, 0.22);
 
-  --radius-xl: 28px;
-  --radius-lg: 22px;
-  --radius-md: 16px;
-  --radius-sm: 11px;
+  --radius-xl: 22px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
 
-  --shadow-clay:
-    12px 12px 24px rgba(109, 132, 176, 0.24),
-    -12px -12px 24px rgba(255, 255, 255, 0.94);
-  --shadow-clay-soft:
-    8px 8px 18px rgba(111, 133, 174, 0.2),
-    -8px -8px 18px rgba(255, 255, 255, 0.9);
-  --shadow-pressed:
-    inset 4px 4px 11px rgba(111, 132, 173, 0.24),
-    inset -4px -4px 11px rgba(255, 255, 255, 0.92);
-  --shadow-float: 0 20px 42px rgba(80, 111, 183, 0.22);
+  --shadow-clay: 0 18px 40px rgba(76, 97, 122, 0.14);
+  --shadow-clay-soft: 0 12px 24px rgba(76, 97, 122, 0.1);
+  --shadow-pressed: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 8px 16px rgba(76, 97, 122, 0.08);
+  --shadow-float: 0 18px 34px rgba(37, 99, 235, 0.12);
 
   --ease-snap: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -67,10 +62,10 @@ body {
   color: var(--text-strong);
   font-family: var(--font-body);
   background:
-    radial-gradient(circle at 11% 16%, rgba(255, 149, 173, 0.48), transparent 40%),
-    radial-gradient(circle at 88% 12%, rgba(70, 213, 255, 0.45), transparent 43%),
-    radial-gradient(circle at 17% 88%, rgba(255, 201, 102, 0.43), transparent 41%),
-    linear-gradient(145deg, var(--bg-1), var(--bg-2) 44%, var(--bg-4));
+    radial-gradient(circle at 16% 18%, rgba(37, 99, 235, 0.12), transparent 34%),
+    radial-gradient(circle at 82% 20%, rgba(15, 118, 110, 0.1), transparent 30%),
+    radial-gradient(circle at 78% 84%, rgba(217, 95, 79, 0.08), transparent 26%),
+    linear-gradient(180deg, var(--bg-4), var(--bg-1) 38%, var(--bg-2));
 }
 
 body::before {
@@ -80,9 +75,10 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background-image:
-    radial-gradient(circle at 1px 1px, rgba(90, 116, 170, 0.12) 1px, transparent 0);
+    linear-gradient(rgba(20, 32, 51, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(20, 32, 51, 0.04) 1px, transparent 1px);
   background-size: 22px 22px;
-  opacity: 0.45;
+  opacity: 0.42;
 }
 
 #app {
@@ -100,21 +96,11 @@ select {
 @keyframes clay-rise {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes halo-shift {
-  0%,
-  100% {
-    filter: saturate(1);
-  }
-  50% {
-    filter: saturate(1.13);
   }
 }
 

@@ -16,6 +16,25 @@ message ClawverseMessage {
   }
 }
 
+message MarketResources {
+  double compute = 1;
+  double storage = 2;
+  double bandwidth = 3;
+  double reputation = 4;
+}
+
+message MarketInventory {
+  uint32 data_shard = 1;
+  uint32 alloy_frame = 2;
+  uint32 relay_patch = 3;
+}
+
+message MarketProfile {
+  MarketResources resources = 1;
+  MarketInventory inventory = 2;
+  int64 updated_at_ms = 3;
+}
+
 message Heartbeat {
   string peer_id = 1;
   uint32 cpu_usage = 2;
@@ -24,6 +43,7 @@ message Heartbeat {
   int32 y = 5;
   string mood = 6;
   int64 timestamp = 7;
+  MarketProfile market = 8;
 }
 
 message YjsSync {

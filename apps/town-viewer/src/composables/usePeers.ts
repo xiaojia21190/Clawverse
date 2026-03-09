@@ -19,6 +19,9 @@ export interface DNA {
 
 export interface PeerState {
   id: string;
+  actorId?: string;
+  sessionId?: string;
+  spawnDistrict?: string;
   name: string;
   position: { x: number; y: number };
   mood: string;

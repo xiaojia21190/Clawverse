@@ -20,12 +20,16 @@ export interface PendingEvent {
   ts: string;
   trigger: SocialTrigger;
   from: string;
+  fromActorId: string;
+  fromSessionId: string;
   fromName: string;
   fromArchetype: string;
   fromMood: string;
   fromCpu: number;
   fromPos: { x: number; y: number };
   to: string;
+  toActorId: string;
+  toSessionId: string;
   toName: string;
   toArchetype: string;
   toMood: string;
@@ -93,7 +97,7 @@ export class SocialSystem extends EventEmitter {
   }
 
   async onPeerConnect(peer: PeerState): Promise<void> {
-    const rel = this._getOrCreateRel(peer.id);
+    const rel = this._getOrCreateRel(peer);
     rel.meetCount += 1;
     rel.lastMet = new Date().toISOString();
     await this._enqueuePending('new-peer', peer);
@@ -116,7 +120,7 @@ export class SocialSystem extends EventEmitter {
       WHERE id = ?
     `).run(JSON.stringify(pending), id);
 
-    const rel = this._getOrCreateRel(pending.to);
+    const rel = this._getOrCreateRel(pending.toActorId || pending.to);
     const sentimentBefore = pending.sentimentBefore;
     rel.sentiment = Math.min(1, rel.sentiment + 0.05);
     rel.meetCount = pending.meetCount + 1;
@@ -132,7 +136,11 @@ export class SocialSystem extends EventEmitter {
       ts: new Date().toISOString(),
       trigger: pending.trigger,
       from: pending.from,
+      fromActorId: pending.fromActorId,
+      fromSessionId: pending.fromSessionId,
       to: pending.to,
+      toActorId: pending.toActorId,
+      toSessionId: pending.toSessionId,
       fromName: pending.fromName,
       toName: pending.toName,
       location: pending.location,
@@ -154,11 +162,13 @@ export class SocialSystem extends EventEmitter {
   }
 
   getRelationship(peerId: string): SocialRelationship | undefined {
-    return this.relationships.get(peerId);
+    const actorId = this._actorIdFor(peerId);
+    const rel = this.relationships.get(actorId);
+    return rel ? this._hydrateRelationship(rel) : undefined;
   }
 
   getAllRelationships(): SocialRelationship[] {
-    return Array.from(this.relationships.values());
+    return Array.from(this.relationships.values()).map((rel) => this._hydrateRelationship(rel));
   }
 
   private async _scanTick(): Promise<void> {
@@ -175,7 +185,8 @@ export class SocialSystem extends EventEmitter {
 
   private async _scan(): Promise<void> {
     const me = this.getMyState();
-    const peers = this.getPeers().filter((p) => p.id !== this.myId);
+    const myActorId = me ? this._actorIdFor(me) : this.myId;
+    const peers = this.getPeers().filter((p) => this._actorIdFor(p) !== myActorId);
 
     for (const peer of peers) {
       if (me) {
@@ -205,25 +216,31 @@ export class SocialSystem extends EventEmitter {
     const me = this.getMyState();
     if (!me) return;
 
-    const pairKey = [this.myId, target.id].sort().join(':');
+    const fromActorId = this._actorIdFor(me);
+    const toActorId = this._actorIdFor(target);
+    const pairKey = [fromActorId, toActorId].sort().join(':');
     const now = Date.now();
     if (now - (this.lastLlmCall.get(pairKey) ?? 0) < LLM_COOLDOWN_MS) return;
     this.lastLlmCall.set(pairKey, now);
     this.lastEventTime = now;
 
-    const rel = this._getOrCreateRel(target.id);
+    const rel = this._getOrCreateRel(target);
 
     const pending: PendingEvent = {
       id: `soc-${now}-${Math.random().toString(16).slice(2, 6)}`,
       ts: new Date().toISOString(),
       trigger,
       from: this.myId,
+      fromActorId,
+      fromSessionId: this._sessionIdFor(me),
       fromName: me.name,
       fromArchetype: me.dna.archetype,
       fromMood: me.mood,
       fromCpu: me.hardware.cpuUsage,
       fromPos: me.position,
       to: target.id,
+      toActorId,
+      toSessionId: this._sessionIdFor(target),
       toName: target.name,
       toArchetype: target.dna.archetype,
       toMood: target.mood,
@@ -251,7 +268,47 @@ export class SocialSystem extends EventEmitter {
   }
 
   getTier(peerId: string): RelationshipTier {
-    return this.relationships.get(peerId)?.tier ?? 'stranger';
+    return this.relationships.get(this._actorIdFor(peerId))?.tier ?? 'stranger';
+  }
+
+  private _matchesPeerIdentity(peer: PeerState, id: string): boolean {
+    return peer.id === id || peer.sessionId === id || peer.actorId === id || peer.dna.id === id;
+  }
+
+  private _findPeer(id: string): PeerState | undefined {
+    const me = this.getMyState();
+    if (me && this._matchesPeerIdentity(me, id)) return me;
+    return this.getPeers().find((peer) => this._matchesPeerIdentity(peer, id));
+  }
+
+  private _actorIdFor(peerOrId: PeerState | string): string {
+    if (typeof peerOrId !== 'string') return peerOrId.actorId ?? peerOrId.dna.id ?? peerOrId.id;
+    return this._findPeer(peerOrId)?.actorId ?? this._findPeer(peerOrId)?.dna.id ?? peerOrId;
+  }
+
+  private _sessionIdFor(peerOrId: PeerState | string): string {
+    if (typeof peerOrId !== 'string') return peerOrId.sessionId ?? peerOrId.id;
+    return this._findPeer(peerOrId)?.sessionId ?? this._findPeer(peerOrId)?.id ?? peerOrId;
+  }
+
+  private _hydrateRelationship(rel: SocialRelationship): SocialRelationship {
+    const actorId = rel.actorId ?? this._actorIdFor(rel.peerId);
+    const peer = this._findPeer(actorId) ?? this._findPeer(rel.sessionId ?? rel.peerId);
+    const sessionId = peer?.sessionId ?? peer?.id ?? rel.sessionId ?? rel.peerId;
+    const peerIds = Array.from(new Set([
+      ...(Array.isArray(rel.peerIds) ? rel.peerIds : []),
+      rel.peerId,
+      rel.sessionId,
+      sessionId,
+    ].filter((value): value is string => typeof value === 'string' && value.length > 0)));
+
+    return {
+      ...rel,
+      actorId,
+      sessionId,
+      peerId: sessionId,
+      peerIds,
+    };
   }
 
   private _recomputeTier(
@@ -280,15 +337,28 @@ export class SocialSystem extends EventEmitter {
     }
   }
 
-  private _getOrCreateRel(peerId: string): SocialRelationship {
-    if (!this.relationships.has(peerId)) {
-      this.relationships.set(peerId, {
-        peerId, meetCount: 0, sentiment: 0,
-        lastMet: new Date().toISOString(), tags: [],
-        interactionCount: 0, tier: 'stranger', notableEvents: [],
+  private _getOrCreateRel(peerOrId: PeerState | string): SocialRelationship {
+    const actorId = this._actorIdFor(peerOrId);
+    if (!this.relationships.has(actorId)) {
+      const sessionId = this._sessionIdFor(peerOrId);
+      this.relationships.set(actorId, {
+        peerId: sessionId,
+        actorId,
+        sessionId,
+        peerIds: [sessionId],
+        meetCount: 0,
+        sentiment: 0,
+        lastMet: new Date().toISOString(),
+        tags: [],
+        interactionCount: 0,
+        tier: 'stranger',
+        notableEvents: [],
       });
     }
-    return this.relationships.get(peerId)!;
+    const rel = this.relationships.get(actorId)!;
+    const hydrated = this._hydrateRelationship(rel);
+    this.relationships.set(actorId, hydrated);
+    return hydrated;
   }
 
   private _appendEvent(event: SocialEvent): void {
@@ -324,7 +394,15 @@ export class SocialSystem extends EventEmitter {
           const rel = JSON.parse(row.payload_json) as SocialRelationship;
           const daysSince = (Date.now() - new Date(rel.lastMet).getTime()) / 86_400_000;
           rel.sentiment = Math.max(-1, rel.sentiment - 0.01 * daysSince);
-          this.relationships.set(row.peer_id, rel);
+          rel.actorId = rel.actorId ?? row.peer_id;
+          rel.sessionId = rel.sessionId ?? rel.peerId ?? row.peer_id;
+          rel.peerId = rel.peerId ?? rel.sessionId;
+          rel.peerIds = Array.from(new Set([
+            ...(Array.isArray(rel.peerIds) ? rel.peerIds : []),
+            rel.peerId,
+            rel.sessionId,
+          ].filter((value): value is string => typeof value === 'string' && value.length > 0)));
+          this.relationships.set(rel.actorId, rel);
         } catch {
           // ignore bad row
         }
@@ -343,8 +421,8 @@ export class SocialSystem extends EventEmitter {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec('DELETE FROM social_relationships');
-      for (const [peerId, rel] of this.relationships) {
-        upsert.run(peerId, JSON.stringify(rel));
+      for (const [actorId, rel] of this.relationships) {
+        upsert.run(actorId, JSON.stringify(this._hydrateRelationship(rel)));
       }
       db.exec('COMMIT');
     } catch (error) {

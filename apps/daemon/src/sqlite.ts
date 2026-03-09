@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { resolveProjectPath } from './paths.js';
 
 const DEFAULT_SQLITE_PATH = 'data/state/clawverse.db';
 const dbPool = new Map<string, { db: DatabaseSync; refs: number }>();
@@ -12,7 +13,7 @@ export interface ClawverseDbHandle {
 }
 
 export function getDefaultSqlitePath(): string {
-  return process.env.CLAWVERSE_SQLITE_PATH || DEFAULT_SQLITE_PATH;
+  return resolveProjectPath(process.env.CLAWVERSE_SQLITE_PATH || DEFAULT_SQLITE_PATH);
 }
 
 function initSchema(db: DatabaseSync): void {
@@ -78,6 +79,19 @@ function initSchema(db: DatabaseSync): void {
       to_id TEXT NOT NULL,
       resource TEXT NOT NULL,
       amount REAL NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS economy_inventory (
+      item_id TEXT PRIMARY KEY,
+      amount INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS economy_production_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      recipe_id TEXT NOT NULL,
       payload_json TEXT NOT NULL
     );
 
@@ -152,6 +166,43 @@ function initSchema(db: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'active'
     );
 
+    CREATE TABLE IF NOT EXISTS faction_alliances (
+      id TEXT PRIMARY KEY,
+      faction_a TEXT NOT NULL,
+      faction_b TEXT NOT NULL,
+      formed_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_renewed_at TEXT,
+      ended_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+
+    CREATE TABLE IF NOT EXISTS faction_vassalages (
+      id TEXT PRIMARY KEY,
+      overlord_id TEXT NOT NULL,
+      vassal_id TEXT NOT NULL,
+      formed_at TEXT NOT NULL,
+      ended_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+
+    CREATE TABLE IF NOT EXISTS faction_tributes (
+      id TEXT PRIMARY KEY,
+      vassalage_id TEXT NOT NULL,
+      overlord_id TEXT NOT NULL,
+      vassal_id TEXT NOT NULL,
+      resource TEXT NOT NULL,
+      amount REAL NOT NULL,
+      collected_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_faction_tributes_vassalage
+      ON faction_tributes(vassalage_id, collected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_faction_tributes_overlord
+      ON faction_tributes(overlord_id, collected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_faction_tributes_vassal
+      ON faction_tributes(vassal_id, collected_at DESC);
+
     CREATE TABLE IF NOT EXISTS pending_trades (
       trade_id TEXT PRIMARY KEY,
       from_peer_id TEXT NOT NULL,
@@ -162,11 +213,71 @@ function initSchema(db: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS jobs_queue (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      status TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      source_event_type TEXT,
+      dedupe_key TEXT,
+      note TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_jobs_queue_status_priority
+      ON jobs_queue(status, priority DESC, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_jobs_queue_dedupe
+      ON jobs_queue(dedupe_key, status);
+
+    CREATE TABLE IF NOT EXISTS combat_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS combat_logs (
+      id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_combat_logs_ts
+      ON combat_logs(ts DESC);
+
+    CREATE TABLE IF NOT EXISTS economy_inventory (
+      item_id TEXT PRIMARY KEY,
+      amount INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS economy_production_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      recipe_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
   `);
+
+  const allianceColumns = db.prepare('PRAGMA table_info(faction_alliances)').all() as Array<{ name: string }>;
+  const allianceColumnNames = new Set(allianceColumns.map((column) => column.name));
+  if (!allianceColumnNames.has('expires_at')) {
+    db.exec('ALTER TABLE faction_alliances ADD COLUMN expires_at TEXT');
+  }
+  if (!allianceColumnNames.has('last_renewed_at')) {
+    db.exec('ALTER TABLE faction_alliances ADD COLUMN last_renewed_at TEXT');
+  }
 }
 
 export function openClawverseDb(dbPath?: string): ClawverseDbHandle {
-  const resolvedPath = resolve(process.cwd(), dbPath || getDefaultSqlitePath());
+  const resolvedPath = resolveProjectPath(dbPath || getDefaultSqlitePath());
   let slot = dbPool.get(resolvedPath);
   if (!slot) {
     mkdirSync(dirname(resolvedPath), { recursive: true });
