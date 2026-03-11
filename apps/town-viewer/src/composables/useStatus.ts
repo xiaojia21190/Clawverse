@@ -1,7 +1,8 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import type { PeerState } from './usePeers';
+import type { TopicWorldSummary } from './useWorldNodes';
 
-export interface GovernorState {
+export interface CoordinationSignalState {
   mode: string;
   focusLane: string;
   objective: string;
@@ -13,6 +14,9 @@ export interface GovernorState {
   confidence: number;
   updatedAt: string;
 }
+
+// 兼容旧命名，逐步迁移到 CoordinationSignalState。
+export type GovernorState = CoordinationSignalState;
 
 export interface HardwareMetrics {
   cpuUsage: number;
@@ -26,6 +30,21 @@ export interface HardwareMetrics {
   cpuCores: number;
 }
 
+export type WorkerHealthStatus = 'live' | 'stale' | 'missing';
+
+export interface WorkerHeartbeatSnapshot {
+  worker: string;
+  lastSeenAt: string | null;
+  ageMs: number | null;
+  status: WorkerHealthStatus;
+}
+
+export interface WorkerHealthSummary {
+  ttlMs: number;
+  lifeWorker: WorkerHeartbeatSnapshot;
+  workers: WorkerHeartbeatSnapshot[];
+}
+
 export interface StatusResponse {
   id: string;
   actorId?: string | null;
@@ -33,7 +52,34 @@ export interface StatusResponse {
   mood: string;
   metrics: HardwareMetrics;
   state: PeerState | null;
+  world?: TopicWorldSummary | null;
   combat: Record<string, unknown> | null;
+  autonomy?: {
+    orchestrationMode?: 'advisory';
+    contract?: {
+      actorAutonomy: 'openclaw-per-actor';
+      worldGovernance: 'emergent-social';
+      leaderAuthority: 'soft-influence';
+      operatorScope: 'local-suggestion-only';
+      worldMutationAccess: 'worker-system-only';
+      migrationUnit: 'squad';
+      primaryMigrationTrigger: 'survival';
+    };
+    intents?: Array<{
+      rank: number;
+      lane: string;
+      kind: string;
+      title: string;
+      sourceEventType: string;
+      dedupeKey: string;
+      basePriority: number;
+      finalPriority: number;
+      score: number;
+      reasons: string[];
+    }>;
+    workerHealth?: WorkerHealthSummary | null;
+  } | null;
+  coordination?: CoordinationSignalState | null;
   governor?: GovernorState | null;
   connectedPeers: number;
   knownPeers: number;

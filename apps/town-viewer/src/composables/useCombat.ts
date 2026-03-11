@@ -59,6 +59,24 @@ export function useCombat() {
   const actionError = ref('');
   let timer: ReturnType<typeof setInterval> | null = null;
 
+  async function submitCombatGuidance(message: string, payload: Record<string, unknown>): Promise<boolean> {
+    try {
+      const res = await fetch('/brain/guidance', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'note',
+          message,
+          payload,
+          ttlMs: 20 * 60_000,
+        }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async function refresh() {
     isLoading.value = true;
     try {
@@ -81,50 +99,35 @@ export function useCombat() {
   }
 
   async function setPosture(posture: 'steady' | 'guarded' | 'fortified'): Promise<boolean> {
-    try {
-      const res = await fetch('/combat/posture', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ posture }),
-      });
-      const data = await res.json().catch(() => null) as { error?: string; status?: CombatStatus } | null;
-      if (res.ok) {
-        actionError.value = '';
-        actionMessage.value = 'Defense posture updated.';
-      } else {
-        actionError.value = data?.error ? `Failed to update posture: ${data.error}.` : 'Failed to update posture.';
-        actionMessage.value = '';
-      }
-      await refresh();
-      return res.ok;
-    } catch {
-      actionError.value = 'Failed to update posture.';
+    const ok = await submitCombatGuidance(
+      `Prefer shifting combat posture to ${posture} if current threat pressure supports it.`,
+      { action: 'combat_posture', posture },
+    );
+    if (ok) {
+      actionError.value = '';
+      actionMessage.value = 'Posture suggestion recorded.';
+    } else {
+      actionError.value = 'Failed to submit posture suggestion.';
       actionMessage.value = '';
-      return false;
     }
+    await refresh();
+    return ok;
   }
 
   async function treat(): Promise<boolean> {
-    try {
-      const res = await fetch('/combat/treat', { method: 'POST' });
-      const data = await res.json().catch(() => null) as { error?: string; healed?: number; status?: CombatStatus } | null;
-      if (res.ok) {
-        const healed = Math.max(0, Math.round(Number(data?.healed ?? 0)));
-        actionError.value = '';
-        actionMessage.value = healed > 0 ? `Treatment completed (+${healed} HP).` : 'Treatment completed.';
-      } else {
-        actionError.value = data?.error === 'insufficient_medical_support'
-          ? 'Treatment failed: shelter or relay support is required.'
-          : 'Treatment failed.';
-        actionMessage.value = '';
-      }
-      await refresh();
-      return res.ok;
-    } catch {
-      actionError.value = 'Treatment request failed.';
+    const ok = await submitCombatGuidance(
+      'Prefer immediate treatment if shelter support and survival outlook permit.',
+      { action: 'combat_treat' },
+    );
+    if (ok) {
+      actionError.value = '';
+      actionMessage.value = 'Treatment suggestion recorded.';
+    } else {
+      actionError.value = 'Failed to submit treatment suggestion.';
       actionMessage.value = '';
-      return false;
     }
+    await refresh();
+    return ok;
   }
 
   onMounted(() => {

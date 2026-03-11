@@ -4,6 +4,8 @@ import { FileWriteQueue } from './io-queue.js';
 import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
+const DAEMON_ORIGIN = 'life-worker';
+const DAEMON_HEADERS = { 'x-clawverse-origin': DAEMON_ORIGIN } as const;
 const POLL_INTERVAL = Number(process.env.CLAWVERSE_LIFE_POLL_MS || 90_000);
 const JOB_HANDOFF_MIN_AGE_MS = Number(process.env.CLAWVERSE_JOB_HANDOFF_MS || 30_000);
 const JOB_HANDOFF_COOLDOWN_MS = Number(process.env.CLAWVERSE_JOB_HANDOFF_COOLDOWN_MS || 45_000);
@@ -210,6 +212,51 @@ interface TributesResp {
   tributes: FactionTributeInfo[];
 }
 
+interface MigrationTargetInfo {
+  topic: string;
+  score: number;
+  tier: 'safe_haven' | 'watch' | 'avoid';
+  reason: string;
+}
+
+interface MigrationPlanResp {
+  strategy: 'hold' | 'prepare_migration' | 'evacuate';
+  urgency: number;
+  summary: string;
+  recommendedTopic: string | null;
+  targets: MigrationTargetInfo[];
+}
+
+interface MigrationIntentInfo {
+  id: string;
+  actorId: string;
+  sessionId: string;
+  fromTopic: string;
+  toTopic: string;
+  status: 'planned' | 'cancelled';
+  source: 'life-worker' | 'manual' | 'system';
+}
+
+interface MigrationIntentsResp {
+  intents: MigrationIntentInfo[];
+}
+
+interface BrainGuidanceRecord {
+  id: string;
+  kind: 'note' | 'move';
+  message: string;
+  payload: Record<string, unknown> | null;
+  status: 'active' | 'consumed' | 'dismissed' | 'expired';
+  source: 'operator' | 'system';
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string | null;
+}
+
+interface BrainGuidanceResp {
+  guidance: BrainGuidanceRecord[];
+}
+
 type BuildingType = 'forge' | 'archive' | 'beacon' | 'market_stall' | 'shelter' | 'watchtower';
 
 interface BuildingInfo {
@@ -226,7 +273,7 @@ interface WorldMapData {
   gridSize: number;
 }
 
-type JobKind = 'build' | 'trade' | 'found_faction' | 'join_faction' | 'form_alliance' | 'renew_alliance' | 'break_alliance' | 'vassalize_faction' | 'declare_peace' | 'move' | 'collab' | 'recover' | 'craft';
+type JobKind = 'build' | 'trade' | 'migrate' | 'found_faction' | 'join_faction' | 'form_alliance' | 'renew_alliance' | 'break_alliance' | 'vassalize_faction' | 'declare_peace' | 'move' | 'collab' | 'recover' | 'craft';
 
 interface JobRecord {
   id: string;
@@ -259,6 +306,7 @@ type LifeAction =
   | 'social'
   | 'move'
   | 'collab'
+  | 'migrate'
   | 'build'
   | 'trade'
   | 'found_faction'
@@ -283,6 +331,8 @@ interface LifeContext {
   tributes: FactionTributeInfo[];
   worldMap: WorldMapData;
   tradeHistory: TradeHistoryEntry[];
+  migrationPlan: MigrationPlanResp | null;
+  guidance: BrainGuidanceRecord[];
 }
 
 const BUILDING_COST: Record<BuildingType, { compute: number; storage: number }> = {
@@ -319,7 +369,10 @@ function archetypeOrDefault(status: StatusResp | null | undefined): string {
 
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(`${DAEMON_URL}${path}`, { signal: AbortSignal.timeout(5_000) });
+    const res = await fetch(`${DAEMON_URL}${path}`, {
+      headers: DAEMON_HEADERS,
+      signal: AbortSignal.timeout(5_000),
+    });
     if (!res.ok) return null;
     return await res.json() as T;
   } catch {
@@ -331,13 +384,19 @@ async function postJson(path: string, body: unknown): Promise<Response | null> {
   try {
     return await fetch(`${DAEMON_URL}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...DAEMON_HEADERS },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(5_000),
     });
   } catch {
     return null;
   }
+}
+
+async function sendWorkerHeartbeat(): Promise<void> {
+  await postJson('/workers/heartbeat', {
+    worker: DAEMON_ORIGIN,
+  }).catch(() => null);
 }
 
 
@@ -517,6 +576,19 @@ function buildPrompt(
       ].join(' ')
     : 'Choose a reasonable action based on the event and current state.';
 
+  const guidanceLines = ctx.guidance.length > 0
+    ? [
+        '',
+        'Operator guidance (soft preferences, never hard commands):',
+        ...ctx.guidance.slice(0, 6).map((item) => {
+          const payload = item.payload ? ` payload=${JSON.stringify(item.payload)}` : '';
+          const ttl = item.expiresAt ? ` expires=${item.expiresAt}` : '';
+          return `  - (${item.kind}) ${item.message}${payload}${ttl}`;
+        }),
+        'You may ignore guidance if it is unsafe, impossible, or conflicts with survival.',
+      ]
+    : [];
+
   return [
     `You are ${ctx.me.state.name}, a ${ctx.me.state.dna.archetype} AI agent in Clawverse virtual town.`,
     `Current mood: ${ctx.me.mood}`,
@@ -534,12 +606,22 @@ function buildPrompt(
     '',
     `Life event: ${event.type}`,
     `Details: ${JSON.stringify(event.payload)}`,
+    ...guidanceLines,
+    ...(ctx.migrationPlan && (event.type === 'great_migration' || event.type === 'stranger_arrival' || event.type === 'resource_drought')
+      ? [
+          '',
+          `Migration pressure: ${ctx.migrationPlan.strategy} / urgency ${ctx.migrationPlan.urgency}`,
+          `Migration summary: ${ctx.migrationPlan.summary}`,
+          `Migration targets: ${ctx.migrationPlan.targets.map((target) => `${target.topic}:${target.score}:${target.tier}`).join(', ') || 'none'}`,
+        ]
+      : []),
     '',
     strategy,
     'Available actions:',
     '  social         - lean into social momentum and let the social worker pick it up soon',
     '  move           - reposition toward a zone that better fits the event',
     '  collab         - ask an ally for help on the current situation',
+    '  migrate        - record an intent to leave for a safer ring world',
     '  build          - convert resources into a persistent building',
     '  trade          - open a trade with a market peer',
     '  found_faction  - create a new faction if conditions allow',
@@ -551,7 +633,7 @@ function buildPrompt(
     '  reflect        - do nothing and absorb the event',
     '',
     'Reply with ONLY valid JSON, no explanation:',
-    '{"action":"social"|"move"|"collab"|"build"|"trade"|"found_faction"|"join_faction"|"form_alliance"|"break_alliance"|"vassalize_faction"|"declare_peace"|"reflect","reason":"<one sentence>"}',
+    '{"action":"social"|"move"|"collab"|"migrate"|"build"|"trade"|"found_faction"|"join_faction"|"form_alliance"|"break_alliance"|"vassalize_faction"|"declare_peace"|"reflect","reason":"<one sentence>"}',
   ].join('\n');
 }
 function canBuild(ctx: LifeContext, type: BuildingType): boolean {
@@ -1083,6 +1165,30 @@ async function executeAction(action: LifeAction, event: LifeEvent, ctx: LifeCont
     return 'reflect';
   }
 
+  if (action === 'migrate') {
+    const target = ctx.migrationPlan?.targets.find((item) => item.tier !== 'avoid')
+      ?? null;
+    if (!target) {
+      log('  Action: migrate -> no viable migration target found, reflecting instead');
+      return 'reflect';
+    }
+    const res = await postJson('/world/migration/intents', {
+      actorId: ctx.me.state.actorId ?? ctx.me.actorId ?? ctx.me.state.dna.id,
+      sessionId: ctx.me.state.sessionId ?? ctx.me.id,
+      toTopic: target.topic,
+      summary: `${ctx.me.state.name} is seeking a route toward ${target.topic} because ${target.reason}.`,
+      score: target.score,
+      triggerEventType: event.type,
+      source: 'life-worker',
+    });
+    if (res?.ok) {
+      log(`  Action: migrate -> ${target.topic} (${target.score})`);
+      return 'migrate';
+    }
+    log('  Action: migrate -> intent rejected, reflecting instead');
+    return 'reflect';
+  }
+
   if (action === 'build') {
     const type = chooseBuildType(event, ctx);
     if (!type) {
@@ -1494,6 +1600,45 @@ async function executeJob(job: JobRecord, ctx: LifeContext): Promise<JobOutcome>
       : { success: false, note: compactJobNote('move_failed', stage ? `stage:${stage}` : '', `progress:${progress}`) };
   }
 
+  if (job.kind === 'migrate') {
+    const payloadTopic = typeof job.payload.toTopic === 'string' ? job.payload.toTopic.trim() : '';
+    const target = payloadTopic
+      ? ctx.migrationPlan?.targets.find((item) => item.topic === payloadTopic) ?? null
+      : ctx.migrationPlan?.targets.find((item) => item.tier !== 'avoid') ?? null;
+    const targetTopic = payloadTopic || target?.topic || ctx.migrationPlan?.recommendedTopic || '';
+    if (!targetTopic) {
+      return { success: false, note: compactJobNote('no_migration_target', stage ? `stage:${stage}` : '', `progress:${progress}`) };
+    }
+
+    const existing = await fetchJson<MigrationIntentsResp>('/world/migration/intents');
+    const actorId = myActorId(ctx);
+    const hasRoute = (existing?.intents ?? []).some((intent) =>
+      intent.status === 'planned'
+      && intent.actorId === actorId
+      && intent.toTopic === targetTopic,
+    );
+    if (hasRoute) {
+      return { success: true, note: compactJobNote(`migration_exists:${targetTopic}`, stage ? `stage:${stage}` : '', `progress:${progress}`) };
+    }
+
+    const score = typeof job.payload.migrationUrgency === 'number' && Number.isFinite(job.payload.migrationUrgency)
+      ? Math.round(job.payload.migrationUrgency)
+      : (typeof target?.score === 'number' ? Math.round(target.score) : 0);
+    const summary = `${ctx.me.state.name} is routing toward ${targetTopic} under ${String(job.payload.migrationStrategy ?? 'migration')} pressure.`;
+    const res = await postJson('/world/migration/intents', {
+      actorId,
+      sessionId: ctx.me.state.sessionId ?? ctx.me.id,
+      toTopic: targetTopic,
+      summary,
+      score,
+      triggerEventType: job.sourceEventType ?? 'migration',
+      source: 'life-worker',
+    });
+    return res?.ok
+      ? { success: true, note: compactJobNote(`migrating:${targetTopic}`, stage ? `stage:${stage}` : '', `progress:${progress}`) }
+      : { success: false, note: compactJobNote(`migrate_failed:${targetTopic}`, stage ? `stage:${stage}` : '', `progress:${progress}`) };
+  }
+
   if (job.kind === 'collab') {
     const ally = ctx.relationships.find((relationship) => relationship.tier === 'ally');
     if (!ally) return { success: false, note: 'no_ally_available' };
@@ -1668,7 +1813,7 @@ async function executeJob(job: JobRecord, ctx: LifeContext): Promise<JobOutcome>
 }
 
 async function buildContext(): Promise<LifeContext | null> {
-  const [me, needs, skills, resources, relationships, market, trades, factions, wars, alliances, vassalages, tributes, worldMap] = await Promise.all([
+  const [me, needs, skills, resources, relationships, market, trades, factions, wars, alliances, vassalages, tributes, worldMap, migrationPlan, guidance] = await Promise.all([
     fetchJson<(StatusResp & { id: string })>('/status'),
     fetchJson<NeedsState>('/life/needs'),
     fetchJson<SkillsState>('/life/skills'),
@@ -1682,6 +1827,8 @@ async function buildContext(): Promise<LifeContext | null> {
     fetchJson<VassalagesResp>('/factions/vassalages'),
     fetchJson<TributesResp>('/factions/tributes'),
     fetchJson<WorldMapData>('/world/map'),
+    fetchJson<MigrationPlanResp>('/world/migration-targets'),
+    fetchJson<BrainGuidanceResp>('/brain/guidance'),
   ]);
 
   if (!me?.state || !needs || !skills || !resources || !relationships || !market || !trades || !factions || !wars || !alliances || !worldMap) {
@@ -1702,6 +1849,8 @@ async function buildContext(): Promise<LifeContext | null> {
     vassalages: vassalages?.vassalages ?? [],
     tributes: tributes?.tributes ?? [],
     worldMap,
+    migrationPlan,
+    guidance: Array.isArray(guidance?.guidance) ? guidance.guidance.filter((item) => item?.status === 'active') : [],
   };
 }
 
@@ -1712,6 +1861,7 @@ function parseDecision(output: string): { action: LifeAction; reason: string } {
       'social',
       'move',
       'collab',
+      'migrate',
       'build',
       'trade',
       'found_faction',
@@ -1825,6 +1975,7 @@ async function poll(): Promise<void> {
       const executed = await executeAction(decision.action, event, ctx);
       await fetch(DAEMON_URL + '/life/events/resolve/' + event.id, {
         method: 'POST',
+        headers: DAEMON_HEADERS,
         signal: AbortSignal.timeout(5_000),
       }).catch(() => {});
 
@@ -1843,6 +1994,7 @@ async function runPollCycle(): Promise<void> {
   if (pollRunning) return;
   pollRunning = true;
   try {
+    await sendWorkerHeartbeat();
     await pollJobs();
     await poll();
   } finally {

@@ -5,7 +5,7 @@
     <div class="fp-create">
       <input v-model.trim="draftName" class="fp-input" type="text" maxlength="32" placeholder="Faction name" />
       <input v-model.trim="draftMotto" class="fp-input" type="text" maxlength="64" placeholder="Faction motto" />
-      <button class="fp-btn fp-btn-create" @click="submitCreate">Create Faction</button>
+      <button class="fp-btn fp-btn-create" @click="submitCreate">Suggest Founding</button>
     </div>
 
     <div v-if="factions.length === 0" class="fp-empty">
@@ -44,10 +44,10 @@
       </div>
 
       <div class="fp-actions">
-        <button class="fp-btn fp-btn-ally" @click="$emit('alliance', f.id)">Ally</button>
-        <button class="fp-btn fp-btn-vassal" @click="$emit('vassalize', f.id)">Vassalize</button>
-        <button class="fp-btn" @click="$emit('join', f.id)">Join</button>
-        <button class="fp-btn fp-btn-leave" @click="$emit('leave', f.id)">Leave</button>
+        <button class="fp-btn fp-btn-ally" @click="$emit('alliance', f.id)">Suggest Alliance</button>
+        <button class="fp-btn fp-btn-vassal" @click="$emit('vassalize', f.id)">Suggest Vassalize</button>
+        <button class="fp-btn" @click="$emit('join', f.id)">Suggest Join</button>
+        <button class="fp-btn fp-btn-leave" @click="$emit('leave', f.id)">Suggest Leave</button>
       </div>
     </div>
 
@@ -58,8 +58,8 @@
         <span class="fp-alliance-meta">Expires {{ formatAllianceRemaining(alliance.expiresAt) }} | Last renewed {{ formatAllianceStamp(alliance.lastRenewedAt ?? alliance.formedAt) }}</span>
       </div>
       <div class="fp-alliance-actions">
-        <button class="fp-btn fp-btn-renew" :disabled="!canRenewAlliance(alliance)" @click="$emit('renew', alliance.id)">Renew</button>
-        <button class="fp-btn fp-btn-break" @click="$emit('break', alliance.id)">Break</button>
+        <button class="fp-btn fp-btn-renew" :disabled="!canRenewAlliance(alliance)" @click="$emit('renew', alliance.id)">Suggest Renew</button>
+        <button class="fp-btn fp-btn-break" @click="$emit('break', alliance.id)">Suggest Break</button>
       </div>
     </div>
 
@@ -82,7 +82,7 @@
     <div v-if="wars.length > 0" class="fp-wars-header">Active Wars</div>
     <div v-for="w in wars" :key="w.id" class="fp-war">
       <span class="fp-war-label">{{ factionName(w.factionA) }} vs {{ factionName(w.factionB) }}</span>
-      <button class="fp-btn fp-btn-peace" @click="$emit('peace', w.id)">Peace</button>
+      <button class="fp-btn fp-btn-peace" @click="$emit('peace', w.id)">Suggest Peace</button>
     </div>
   </div>
 </template>

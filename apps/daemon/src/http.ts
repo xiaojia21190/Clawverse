@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import Fastify, { FastifyInstance, FastifyReply } from 'fastify';
+import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { StateStore } from './state.js';
 import { BioMonitor } from './bio.js';
 import { ClawverseNetwork } from './network.js';
@@ -15,15 +15,33 @@ import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
 import { FactionSystem } from './faction.js';
 import { JobsSystem, JobKind, JobPayload } from './jobs.js';
+import { ClusterRegistry } from './cluster-registry.js';
+import { OutsiderRegistry } from './outsider-registry.js';
+import { MigrationRegistry } from './migration-registry.js';
+import { MigrationPlanSnapshot } from './migration-planner.js';
+import { summarizeMigrationSquads } from './migration-squads.js';
 import { CombatSystem } from './combat.js';
+import { BrainGuidanceRegistry } from './brain-guidance-registry.js';
+import { RingMirrorRegistry } from './ring-registry.js';
+import { RingPeerRegistry } from './ring-peer-registry.js';
 import type { StrategicGovernorState } from './governor-planner.js';
+import type { AutonomyIntentSnapshot } from './autonomy-intent.js';
+import type { WorkerHeartbeatSnapshot } from './worker-heartbeat.js';
 import { logger } from './logger.js';
 import { EvolutionEpisodeLogger } from './evolution.js';
+import { AUTONOMY_CONTRACT } from './autonomy-contract.js';
 import { DNA, ModelTrait, SocialEvent, RelationshipTier } from '@clawverse/types';
-import type { EvolutionRuntimeConfig } from '@clawverse/types';
+import type { AutonomyOrchestrationMode, EvolutionRuntimeConfig } from '@clawverse/types';
 import { createTradeRequest } from '@clawverse/protocol';
 import { resolveProjectPath } from './paths.js';
-import { buildWorldNodes, findPeerByIdentity } from './world-nodes.js';
+import { findPeerByIdentity } from './world-nodes.js';
+import { buildRingWorld, buildTopicWorld } from './world-topology.js';
+import {
+  isLoopbackAddress,
+  normalizeRemoteAddress,
+  resolveRequestOperatorKind,
+  type RequestOperatorKind,
+} from './request-origin.js';
 
 interface APIContext {
   stateStore: StateStore;
@@ -31,6 +49,15 @@ interface APIContext {
   network: ClawverseNetwork;
   myId: string;
   topic: string;
+  ringTopics: string[];
+  ringRegistry: RingMirrorRegistry;
+  ringPeerRegistry: RingPeerRegistry;
+  ringPeerTtlMs: number;
+  clusterRegistry: ClusterRegistry;
+  outsiderRegistry: OutsiderRegistry;
+  migrationRegistry: MigrationRegistry;
+  getMigrationPlan: () => MigrationPlanSnapshot;
+  guidanceRegistry: BrainGuidanceRegistry;
   episodeLogger: EvolutionEpisodeLogger | null;
   evolutionConfig: EvolutionRuntimeConfig;
   social: SocialSystem;
@@ -44,7 +71,13 @@ interface APIContext {
   faction?: FactionSystem;
   jobs: JobsSystem;
   combat: CombatSystem;
+  autonomyOrchestrationMode: AutonomyOrchestrationMode;
+  workerHeartbeatTtlMs: number;
+  heartbeatWorker: (worker: string, nowMs?: number) => WorkerHeartbeatSnapshot | null;
+  getWorkerHeartbeat: (worker: string, nowMs?: number) => WorkerHeartbeatSnapshot;
+  listWorkerHeartbeats: (nowMs?: number) => WorkerHeartbeatSnapshot[];
   getGovernorState: () => StrategicGovernorState;
+  getAutonomyIntents: () => AutonomyIntentSnapshot[];
   applyCombatEffects: (effects: import('./combat.js').CombatTickEffect) => void;
   // Called when /dna/soul is POSTed 闂?daemon regenerates DNA and re-announces
   onSoulUpdate: (soul: { soulHash: string; modelTrait?: ModelTrait; badges?: string[] }) => Promise<void>;
@@ -136,7 +169,7 @@ interface EvolutionRunAuditEntry {
   step: string;
   force: boolean;
   outcome: 'accepted' | 'rejected' | 'completed';
-  operatorKind: 'town-viewer' | 'openclaw-worker' | 'manual-cli' | 'daemon-policy' | 'unknown';
+  operatorKind: RequestOperatorKind;
   note?: string | null;
   ok?: boolean;
   reason?: string | null;
@@ -174,48 +207,6 @@ function isEvolutionRunStep(value: unknown): value is EvolutionRunStep {
   return typeof value === 'string' && value in EVOLUTION_STEP_SCRIPTS;
 }
 
-function normalizeRemoteAddress(value: string | undefined): string {
-  return value?.trim() || 'unknown';
-}
-
-function isLoopbackAddress(value: string | undefined): boolean {
-  const remote = normalizeRemoteAddress(value).toLowerCase();
-  return remote === '127.0.0.1'
-    || remote === '::1'
-    || remote === '::ffff:127.0.0.1'
-    || remote.startsWith('::ffff:127.0.0.');
-}
-
-function resolveEvolutionOperatorKind(
-  source: string | null,
-  origin: string | null,
-  userAgent: string | null,
-): EvolutionRunAuditEntry['operatorKind'] {
-  const normalizedSource = source?.trim().toLowerCase() ?? '';
-  const normalizedOrigin = origin?.trim().toLowerCase() ?? '';
-  const normalizedAgent = userAgent?.trim().toLowerCase() ?? '';
-
-  if (normalizedSource === 'town-viewer' || normalizedOrigin.includes('5173') || normalizedAgent.includes('mozilla/')) {
-    return 'town-viewer';
-  }
-  if (normalizedSource === 'daemon-policy' || normalizedSource.includes('daemon-policy')) {
-    return 'daemon-policy';
-  }
-  if (normalizedSource.includes('worker') || normalizedSource.includes('openclaw')) {
-    return 'openclaw-worker';
-  }
-  if (
-    normalizedAgent.includes('curl/')
-    || normalizedAgent.includes('powershell/')
-    || normalizedAgent.includes('wget/')
-    || normalizedAgent.includes('httpie/')
-    || (!normalizedSource && !normalizedOrigin && !!normalizedAgent)
-  ) {
-    return 'manual-cli';
-  }
-  return normalizedSource || normalizedOrigin || normalizedAgent ? 'unknown' : 'manual-cli';
-}
-
 function normalizeEvolutionNote(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -243,6 +234,91 @@ export async function createHttpServer(
 
   const ownedBuildings = () => context.world.getOwnedBuildings(context.myId, currentActorId());
   const ownedBuildingTypes = () => ownedBuildings().map((building) => building.type);
+
+  interface RequestOperatorContext {
+    operatorKind: RequestOperatorKind;
+    source: string | null;
+    origin: string | null;
+    userAgent: string | null;
+    remoteAddress: string;
+    loopback: boolean;
+  }
+
+  function resolveRequestOperatorContext(request: FastifyRequest): RequestOperatorContext {
+    const source = typeof request.headers['x-clawverse-origin'] === 'string'
+      ? request.headers['x-clawverse-origin']
+      : null;
+    const origin = typeof request.headers.origin === 'string'
+      ? request.headers.origin
+      : null;
+    const userAgent = typeof request.headers['user-agent'] === 'string'
+      ? request.headers['user-agent']
+      : null;
+    const remoteAddress = normalizeRemoteAddress(request.ip || request.socket.remoteAddress);
+    const loopback = isLoopbackAddress(remoteAddress);
+    const operatorKind = resolveRequestOperatorKind(source, origin, userAgent);
+    return {
+      operatorKind,
+      source,
+      origin,
+      userAgent,
+      remoteAddress,
+      loopback,
+    };
+  }
+
+  function canMutateWorldDirectly(
+    meta: RequestOperatorContext,
+    opts?: { allowRemoteSystem?: boolean },
+  ): boolean {
+    if (meta.loopback) {
+      return meta.operatorKind === 'openclaw-worker'
+        || meta.operatorKind === 'daemon-policy';
+    }
+    return opts?.allowRemoteSystem === true && meta.operatorKind === 'daemon-policy';
+  }
+
+  function rejectDirectMutationIfForbidden(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    action: string,
+    opts?: { allowRemoteSystem?: boolean },
+  ): boolean {
+    const meta = resolveRequestOperatorContext(request);
+    if (canMutateWorldDirectly(meta, opts)) return false;
+    reply.code(403).send({
+      error: 'direct_mutation_forbidden',
+      action,
+      operatorKind: meta.operatorKind,
+      hint: 'Only local-role suggestions are allowed for operators. Use /brain/guidance. World mutation is worker/system only.',
+    });
+    return true;
+  }
+
+  function buildTopicWorldView() {
+    const base = buildTopicWorld(
+      context.topic,
+      context.stateStore.getAllPeers(),
+      context.myId,
+      context.ringTopics,
+      context.ringRegistry.list(),
+    );
+    const clusters = context.clusterRegistry.list(context.topic);
+    const outsiders = context.outsiderRegistry.list(context.topic, 24);
+    return {
+      ...base,
+      world: {
+        ...base.world,
+        population: {
+          ...base.world.population,
+          clusterCount: clusters.length,
+          outsiderCount: outsiders.filter((item) => item.status !== 'accepted').length,
+        },
+        clusters,
+        outsiders,
+      },
+    };
+  }
 
   function appendEvolutionAudit(entry: EvolutionRunAuditEntry): void {
     try {
@@ -354,13 +430,45 @@ export async function createHttpServer(
     timestamp: new Date().toISOString(),
   }));
 
+  fastify.get('/workers/health', async () => ({
+    ttlMs: context.workerHeartbeatTtlMs,
+    workers: context.listWorkerHeartbeats(Date.now()),
+    lifeWorker: context.getWorkerHeartbeat('life-worker', Date.now()),
+  }));
+
+  fastify.post<{
+    Body: {
+      worker?: string;
+      nowMs?: number;
+    };
+  }>('/workers/heartbeat', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'workers_heartbeat')) return;
+    const sourceWorker = typeof request.headers['x-clawverse-origin'] === 'string'
+      ? request.headers['x-clawverse-origin']
+      : '';
+    const worker = typeof request.body?.worker === 'string' && request.body.worker.trim().length > 0
+      ? request.body.worker
+      : sourceWorker;
+    if (!worker.trim()) return reply.code(400).send({ error: 'worker required' });
+    const snapshot = context.heartbeatWorker(
+      worker,
+      typeof request.body?.nowMs === 'number' && Number.isFinite(request.body.nowMs)
+        ? request.body.nowMs
+        : Date.now(),
+    );
+    if (!snapshot) return reply.code(400).send({ error: 'invalid worker' });
+    return { success: true, worker: snapshot };
+  });
+
   // Get my status
   fastify.get('/status', async () => {
     const metrics = context.bioMonitor.getMetrics();
     const myState = context.stateStore.getMyState();
     const mood = myState?.mood ?? context.bioMonitor.getMood();
     const peers = context.network.getPeers();
-    const knownActors = buildWorldNodes(context.stateStore.getAllPeers()).length;
+    const world = buildTopicWorldView().world;
+    const nowMs = Date.now();
+    const coordination = context.getGovernorState() ?? null;
     return {
       id: context.myId,
       actorId: myState?.actorId ?? myState?.dna.id ?? null,
@@ -368,11 +476,23 @@ export async function createHttpServer(
       mood,
       metrics,
       state: myState,
+      world,
       combat: context.combat.getStatus(),
-      governor: context.getGovernorState(),
+      autonomy: {
+        orchestrationMode: context.autonomyOrchestrationMode,
+        contract: AUTONOMY_CONTRACT,
+        intents: context.getAutonomyIntents(),
+        workerHealth: {
+          ttlMs: context.workerHeartbeatTtlMs,
+          lifeWorker: context.getWorkerHeartbeat('life-worker', nowMs),
+          workers: context.listWorkerHeartbeats(nowMs),
+        },
+      },
+      coordination,
+      governor: coordination,
       connectedPeers: peers.length,
       knownPeers: context.stateStore.getPeerCount(),
-      knownActors,
+      knownActors: world.population.actorCount,
     };
   });
 
@@ -393,6 +513,7 @@ export async function createHttpServer(
 
   // Move to position
   fastify.post<{ Body: { x: number; y: number } }>('/move', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'move')) return;
     const { x, y } = request.body || {};
     if (typeof x !== 'number' || typeof y !== 'number') {
       reply.code(400);
@@ -415,7 +536,7 @@ export async function createHttpServer(
     myId: context.myId,
     connectedPeers: context.network.getPeerCount(),
     knownPeers: context.stateStore.getPeerCount(),
-    knownActors: buildWorldNodes(context.stateStore.getAllPeers()).length,
+    knownActors: buildTopicWorldView().world.population.actorCount,
     peers: context.network.getPeers(),
   }));
 
@@ -604,7 +725,7 @@ export async function createHttpServer(
     const origin = typeof request.headers.origin === 'string' ? request.headers.origin : null;
     const userAgent = typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null;
     const source = typeof request.headers['x-clawverse-origin'] === 'string' ? request.headers['x-clawverse-origin'] : null;
-    const operatorKind = resolveEvolutionOperatorKind(source, origin, userAgent);
+    const operatorKind = resolveRequestOperatorKind(source, origin, userAgent);
 
     if (!isLoopbackAddress(remoteAddress)) {
       appendEvolutionAudit({
@@ -933,6 +1054,121 @@ export async function createHttpServer(
   );
   fastify.get('/life/relationships', async () => context.social.getAllRelationships());
 
+  // Operator guidance: soft hints for the local brain (never a hard command)
+  fastify.get('/brain/guidance', async () => {
+    context.guidanceRegistry.pruneExpired(Date.now());
+    return { guidance: context.guidanceRegistry.listActive(16, Date.now()) };
+  });
+
+  fastify.post<{
+    Body: {
+      kind?: string;
+      message?: string;
+      payload?: Record<string, unknown>;
+      ttlMs?: number | null;
+      actorId?: string;
+      sessionId?: string;
+    };
+  }>('/brain/guidance', async (request, reply) => {
+    const body = request.body || {};
+    const kind = body.kind === 'move' ? 'move' : 'note';
+    const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+      ? body.payload
+      : null;
+    const ttlMs = typeof body.ttlMs === 'number' && Number.isFinite(body.ttlMs) ? body.ttlMs : null;
+    const myState = context.stateStore.getMyState();
+    const localActorId = myState?.actorId ?? myState?.dna.id ?? context.myId;
+    const localSessionId = myState?.sessionId ?? context.myId;
+    const requestedActorId = typeof body.actorId === 'string' && body.actorId.trim().length > 0
+      ? body.actorId.trim()
+      : typeof request.headers['x-clawverse-actor-id'] === 'string' && request.headers['x-clawverse-actor-id'].trim().length > 0
+        ? request.headers['x-clawverse-actor-id'].trim()
+        : null;
+    const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0
+      ? body.sessionId.trim()
+      : typeof request.headers['x-clawverse-session-id'] === 'string' && request.headers['x-clawverse-session-id'].trim().length > 0
+        ? request.headers['x-clawverse-session-id'].trim()
+        : null;
+    if (requestedActorId && requestedActorId !== localActorId) {
+      return reply.code(403).send({
+        error: 'guidance_target_forbidden',
+        reason: 'operator_can_only_target_local_actor',
+        requestedActorId,
+        localActorId,
+      });
+    }
+    if (requestedSessionId && requestedSessionId !== localSessionId) {
+      return reply.code(403).send({
+        error: 'guidance_target_forbidden',
+        reason: 'operator_can_only_target_local_session',
+        requestedSessionId,
+        localSessionId,
+      });
+    }
+    const targetPayload = {
+      ...(payload ? { ...payload } : {}),
+      guidanceTargetActorId: localActorId,
+      guidanceTargetSessionId: localSessionId,
+    };
+
+    const message = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!message) {
+      if (kind === 'move') {
+        const x = payload && typeof payload.x === 'number' ? Math.round(payload.x) : null;
+        const y = payload && typeof payload.y === 'number' ? Math.round(payload.y) : null;
+        if (x === null || y === null) return reply.code(400).send({ error: 'message required' });
+        const record = context.guidanceRegistry.create({
+          kind,
+          message: `Prefer moving toward (${x},${y}) if it remains safe and useful.`,
+          payload: {
+            ...targetPayload,
+            x,
+            y,
+          },
+          ttlMs,
+          source: 'operator',
+        });
+        return {
+          success: true,
+          acceptedAsSuggestion: true,
+          executionGuarantee: 'none',
+          guidance: record,
+        };
+      }
+      return reply.code(400).send({ error: 'message required' });
+    }
+
+    const record = context.guidanceRegistry.create({
+      kind,
+      message,
+      payload: targetPayload,
+      ttlMs,
+      source: 'operator',
+    });
+    return {
+      success: true,
+      acceptedAsSuggestion: true,
+      executionGuarantee: 'none',
+      guidance: record,
+    };
+  });
+
+  fastify.post<{ Params: { id: string } }>('/brain/guidance/:id/consume', async (request, reply) => {
+    const id = request.params.id.trim();
+    if (!id) return reply.code(400).send({ error: 'id required' });
+    const record = context.guidanceRegistry.consume(id);
+    if (!record) return reply.code(404).send({ error: 'guidance not found' });
+    return { success: true, guidance: record };
+  });
+
+  fastify.delete<{ Params: { id: string } }>('/brain/guidance/:id', async (request, reply) => {
+    const id = request.params.id.trim();
+    if (!id) return reply.code(400).send({ error: 'id required' });
+    const record = context.guidanceRegistry.dismiss(id);
+    if (!record) return reply.code(404).send({ error: 'guidance not found' });
+    return { success: true, guidance: record };
+  });
+
   fastify.get('/jobs', async () => ({
     jobs: context.jobs.listJobs(),
   }));
@@ -966,8 +1202,9 @@ export async function createHttpServer(
       dedupeKey?: string;
     };
   }>('/jobs', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'jobs_create')) return;
     const { kind, title, reason, priority, payload, sourceEventType, dedupeKey } = request.body || {};
-    const validKinds: JobKind[] = ['build', 'trade', 'found_faction', 'join_faction', 'form_alliance', 'renew_alliance', 'break_alliance', 'vassalize_faction', 'declare_peace', 'move', 'collab', 'recover', 'craft'];
+    const validKinds: JobKind[] = ['build', 'trade', 'migrate', 'found_faction', 'join_faction', 'form_alliance', 'renew_alliance', 'break_alliance', 'vassalize_faction', 'declare_peace', 'move', 'collab', 'recover', 'craft'];
     if (!kind || !validKinds.includes(kind as JobKind)) {
       return reply.code(400).send({ error: 'invalid kind' });
     }
@@ -989,6 +1226,7 @@ export async function createHttpServer(
   fastify.post<{ Params: { id: string }; Body: { note?: string; payload?: JobPayload } }>(
     '/jobs/:id/start',
     async (request, reply) => {
+      if (rejectDirectMutationIfForbidden(request, reply, 'jobs_start')) return;
       const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
       const payload = request.body?.payload && typeof request.body.payload === 'object' && !Array.isArray(request.body.payload)
         ? request.body.payload
@@ -1008,6 +1246,7 @@ export async function createHttpServer(
   fastify.post<{ Params: { id: string }; Body: { note?: string; payload?: JobPayload } }>(
     '/jobs/:id/requeue',
     async (request, reply) => {
+      if (rejectDirectMutationIfForbidden(request, reply, 'jobs_requeue')) return;
       const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
       const payload = request.body?.payload && typeof request.body.payload === 'object' && !Array.isArray(request.body.payload)
         ? request.body.payload
@@ -1021,6 +1260,7 @@ export async function createHttpServer(
   fastify.post<{ Params: { id: string }; Body: { note?: string; payload?: JobPayload } }>(
     '/jobs/:id/retry',
     async (request, reply) => {
+      if (rejectDirectMutationIfForbidden(request, reply, 'jobs_retry')) return;
       const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
       const payload = request.body?.payload && typeof request.body.payload === 'object' && !Array.isArray(request.body.payload)
         ? request.body.payload
@@ -1034,6 +1274,7 @@ export async function createHttpServer(
   fastify.post<{ Params: { id: string }; Body: { note?: string } }>(
     '/jobs/:id/complete',
     async (request, reply) => {
+      if (rejectDirectMutationIfForbidden(request, reply, 'jobs_complete')) return;
       const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
       const job = context.jobs.completeJob(request.params.id, note);
       if (!job) return reply.code(404).send({ error: 'job not found or already closed' });
@@ -1044,6 +1285,7 @@ export async function createHttpServer(
   fastify.post<{ Params: { id: string }; Body: { note?: string } }>(
     '/jobs/:id/cancel',
     async (request, reply) => {
+      if (rejectDirectMutationIfForbidden(request, reply, 'jobs_cancel')) return;
       const note = typeof request.body?.note === 'string' ? request.body.note : undefined;
       const job = context.jobs.cancelJob(request.params.id, note);
       if (!job) return reply.code(404).send({ error: 'job not found or already closed' });
@@ -1061,6 +1303,7 @@ export async function createHttpServer(
   });
 
   fastify.post<{ Body: { posture?: string } }>('/combat/posture', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'combat_posture')) return;
     const posture = typeof request.body?.posture === 'string' ? request.body.posture : null;
     if (!posture || !['steady', 'guarded', 'fortified'].includes(posture)) {
       return reply.code(400).send({ error: 'invalid posture' });
@@ -1070,6 +1313,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/combat/treat', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'combat_treat')) return;
     const hasShelter = ownedBuildings().some((building) => building.type === 'shelter');
     const result = context.combat.treat({
       hasShelter,
@@ -1085,6 +1329,7 @@ export async function createHttpServer(
   fastify.get('/storyteller/status', async () => context.storyteller.getStatus());
 
   fastify.post('/storyteller/mode', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'storyteller_mode')) return;
     const { mode } = request.body as { mode: string };
     if (!['Randy', 'Cassandra', 'Phoebe'].includes(mode)) {
       return reply.code(400).send({ error: 'invalid mode' });
@@ -1094,6 +1339,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/storyteller/trigger', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'storyteller_trigger')) return;
     const body = (request.body || {}) as { eventType?: string; payload?: Record<string, unknown> };
     if (!body.eventType || !isLifeEventType(body.eventType)) {
       return reply.code(400).send({
@@ -1109,12 +1355,265 @@ export async function createHttpServer(
 
   fastify.get('/world/map', async () => context.world.getMap());
 
-  fastify.get('/world/nodes', async () => ({
+  fastify.get('/world/clusters', async () => ({
     topic: context.topic,
-    nodes: buildWorldNodes(context.stateStore.getAllPeers()),
+    clusters: context.clusterRegistry.list(context.topic),
   }));
 
+  fastify.get('/world/outsiders', async () => ({
+    topic: context.topic,
+    outsiders: context.outsiderRegistry.list(context.topic, 24),
+  }));
+
+  fastify.get('/world/ring', async () => buildRingWorld(
+    context.topic,
+    context.stateStore.getAllPeers(),
+    context.myId,
+    context.ringTopics,
+    context.ringRegistry.list(),
+  ));
+
+  fastify.get('/world/nodes', async () => buildTopicWorldView());
+
+  fastify.get('/world/ring/mirrors', async () => ({
+    mirrors: context.ringRegistry.list(),
+  }));
+
+  fastify.get('/world/ring/peers', async () => ({
+    peers: context.ringPeerRegistry.listWithHealth(Date.now(), context.ringPeerTtlMs),
+  }));
+
+  fastify.get('/world/migration-targets', async () => context.getMigrationPlan());
+
+  fastify.get('/world/migration/intents', async () => ({
+    intents: context.migrationRegistry.listActive(),
+  }));
+
+  fastify.get('/world/refugee-squads', async () => ({
+    squads: summarizeMigrationSquads(context.migrationRegistry.listActive(64)),
+  }));
+
+  fastify.post<{
+    Body: {
+      fromTopic?: string;
+      label?: string;
+      actorIds?: string[];
+      actorCount?: number;
+      triggerEventType?: string;
+      summary?: string;
+      source?: 'storyteller' | 'migration' | 'manual' | 'system';
+      trust?: number;
+      pressure?: number;
+    }
+  }>('/world/outsiders/arrivals', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'world_outsider_arrival', { allowRemoteSystem: true })) return;
+    const body = request.body || {};
+    const label = typeof body.label === 'string' ? body.label.trim() : '';
+    const summary = typeof body.summary === 'string' ? body.summary.trim() : '';
+    if (!label || !summary) return reply.code(400).send({ error: 'label and summary required' });
+
+    const record = context.outsiderRegistry.create({
+      hostTopic: context.topic,
+      fromTopic: typeof body.fromTopic === 'string' ? body.fromTopic : null,
+      label,
+      actorIds: Array.isArray(body.actorIds) ? body.actorIds : [],
+      actorCount: typeof body.actorCount === 'number' ? body.actorCount : undefined,
+      triggerEventType: typeof body.triggerEventType === 'string' ? body.triggerEventType : 'stranger_arrival',
+      source: body.source === 'storyteller' || body.source === 'migration' || body.source === 'system' ? body.source : 'manual',
+      summary,
+      trust: typeof body.trust === 'number' ? body.trust : undefined,
+      pressure: typeof body.pressure === 'number' ? body.pressure : undefined,
+    });
+
+    return { success: true, outsider: record };
+  });
+
+  fastify.post<{
+    Body: {
+      actorId?: string;
+      sessionId?: string;
+      toTopic?: string;
+      summary?: string;
+      score?: number;
+      triggerEventType?: string;
+      source?: 'life-worker' | 'manual' | 'system';
+    }
+  }>('/world/migration/intents', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'world_migration_intent')) return;
+    const body = request.body || {};
+    const toTopic = typeof body.toTopic === 'string' ? body.toTopic.trim() : '';
+    if (!toTopic) return reply.code(400).send({ error: 'toTopic required' });
+    if (toTopic === context.topic) return reply.code(400).send({ error: 'cannot migrate to current topic' });
+
+    const myState = context.stateStore.getMyState();
+    const actorId = typeof body.actorId === 'string' && body.actorId.trim().length > 0
+      ? body.actorId.trim()
+      : myState?.actorId ?? myState?.dna.id ?? context.myId;
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0
+      ? body.sessionId.trim()
+      : myState?.sessionId ?? context.myId;
+
+    const record = context.migrationRegistry.create({
+      actorId,
+      sessionId,
+      fromTopic: context.topic,
+      toTopic,
+      triggerEventType: typeof body.triggerEventType === 'string' ? body.triggerEventType : 'migration',
+      summary: typeof body.summary === 'string' && body.summary.trim().length > 0
+        ? body.summary
+        : `Migration intent toward ${toTopic}`,
+      score: typeof body.score === 'number' ? body.score : 0,
+      source: body.source === 'life-worker' || body.source === 'system' ? body.source : 'manual',
+    });
+
+    const targetPeer = context.ringPeerRegistry.get(toTopic);
+    let arrivalForwarded = false;
+    let arrivalForwardError: string | null = null;
+
+    if (targetPeer?.baseUrl) {
+      try {
+        const arrivalRes = await fetch(`${targetPeer.baseUrl}/world/outsiders/arrivals`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-clawverse-origin': 'daemon-policy',
+          },
+          body: JSON.stringify({
+            fromTopic: context.topic,
+            label: `${myState?.name ?? actorId} arrival`,
+            actorIds: [actorId],
+            actorCount: 1,
+            triggerEventType: record.triggerEventType,
+            summary: record.summary,
+            source: 'migration',
+            trust: 26,
+            pressure: Math.max(30, Math.round(record.score * 0.55)),
+          }),
+          signal: AbortSignal.timeout(5_000),
+        });
+        arrivalForwarded = arrivalRes.ok;
+        if (!arrivalRes.ok) {
+          const payload = await arrivalRes.text().catch(() => '');
+          arrivalForwardError = `arrival_forward_rejected:${arrivalRes.status}:${payload.slice(0, 120)}`;
+        }
+      } catch (error) {
+        arrivalForwardError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return {
+      success: true,
+      intent: record,
+      arrivalForwarded,
+      arrivalForwardError,
+    };
+  });
+
+  fastify.post<{
+    Body: {
+      topic?: string;
+      baseUrl?: string;
+      updatedAt?: string;
+      source?: 'announced' | 'manual' | 'configured';
+    }
+  }>('/world/ring/announce', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'ring_announce', { allowRemoteSystem: true })) return;
+    const topic = typeof request.body?.topic === 'string' ? request.body.topic.trim() : '';
+    const baseUrl = typeof request.body?.baseUrl === 'string' ? request.body.baseUrl.trim() : '';
+    if (!topic) return reply.code(400).send({ error: 'topic required' });
+    if (!baseUrl) return reply.code(400).send({ error: 'baseUrl required' });
+    if (topic === context.topic) return reply.code(400).send({ error: 'cannot announce active topic' });
+
+    const peer = context.ringPeerRegistry.upsert({
+      topic,
+      baseUrl,
+      updatedAt: typeof request.body?.updatedAt === 'string' && request.body.updatedAt.trim().length > 0
+        ? request.body.updatedAt
+        : undefined,
+      source: request.body?.source === 'configured' || request.body?.source === 'manual'
+        ? request.body.source
+        : 'announced',
+    });
+
+    return { success: true, peer };
+  });
+
+  fastify.post<{
+    Body: {
+      topic?: string;
+      actorCount?: number;
+      branchCount?: number;
+      brainStatus?: 'authoritative' | 'pending' | 'inactive';
+      baseUrl?: string;
+      updatedAt?: string;
+      source?: 'mirror' | 'manual' | 'imported';
+    }
+  }>('/world/ring/mirror', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'ring_mirror', { allowRemoteSystem: true })) return;
+    const topic = typeof request.body?.topic === 'string' ? request.body.topic.trim() : '';
+    if (!topic) return reply.code(400).send({ error: 'topic required' });
+    if (topic === context.topic) return reply.code(400).send({ error: 'cannot mirror active topic' });
+
+    const actorCount = Number(request.body?.actorCount ?? 0);
+    const branchCount = Number(request.body?.branchCount ?? 0);
+    if (!Number.isFinite(actorCount) || actorCount < 0) return reply.code(400).send({ error: 'actorCount must be >= 0' });
+    if (!Number.isFinite(branchCount) || branchCount < 0) return reply.code(400).send({ error: 'branchCount must be >= 0' });
+
+    const brainStatus = request.body?.brainStatus === 'authoritative' || request.body?.brainStatus === 'pending'
+      ? request.body.brainStatus
+      : 'inactive';
+    const source = request.body?.source === 'mirror' || request.body?.source === 'imported'
+      ? request.body.source
+      : 'manual';
+    const baseUrl = typeof request.body?.baseUrl === 'string' ? request.body.baseUrl.trim() : '';
+
+    const mirror = context.ringRegistry.upsert({
+      topic,
+      actorCount,
+      branchCount,
+      brainStatus,
+      updatedAt: typeof request.body?.updatedAt === 'string' && request.body.updatedAt.trim().length > 0
+        ? request.body.updatedAt
+        : undefined,
+      source,
+    });
+    if (baseUrl && topic !== context.topic) {
+      context.ringPeerRegistry.upsert({
+        topic,
+        baseUrl,
+        updatedAt: mirror.updatedAt,
+        source: 'announced',
+      });
+    }
+
+    return {
+      success: true,
+      mirror,
+    };
+  });
+
+  fastify.delete<{ Params: { topic: string } }>('/world/ring/peer/:topic', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'ring_peer_delete')) return;
+    const topic = request.params.topic.trim();
+    if (!topic) return reply.code(400).send({ error: 'topic required' });
+    if (topic === context.topic) return reply.code(400).send({ error: 'cannot delete active topic peer' });
+    const removed = context.ringPeerRegistry.remove(topic);
+    if (!removed) return reply.code(404).send({ error: 'peer not found' });
+    return { success: true, topic };
+  });
+
+  fastify.delete<{ Params: { topic: string } }>('/world/ring/mirror/:topic', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'ring_mirror_delete')) return;
+    const topic = request.params.topic.trim();
+    if (!topic) return reply.code(400).send({ error: 'topic required' });
+    if (topic === context.topic) return reply.code(400).send({ error: 'cannot delete active topic shell' });
+    const removed = context.ringRegistry.remove(topic);
+    if (!removed) return reply.code(404).send({ error: 'mirror not found' });
+    return { success: true, topic };
+  });
+
   fastify.post('/world/build', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'world_build')) return;
     const { type, x, y } = request.body as { type: string; x: number; y: number };
     const validTypes = ['forge', 'archive', 'beacon', 'market_stall', 'shelter', 'watchtower'];
     if (!validTypes.includes(type)) return reply.code(400).send({ error: 'invalid building type' });
@@ -1138,6 +1637,7 @@ export async function createHttpServer(
   });
 
   fastify.delete('/world/build/:id', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'world_demolish')) return;
     const { id } = (request.params as { id: string });
     const ok = context.world.demolish(id, context.myId, currentActorId());
     if (!ok) return reply.code(404).send({ error: 'not found or not yours' });
@@ -1160,6 +1660,7 @@ export async function createHttpServer(
   });
 
   fastify.post<{ Body: { recipeId?: string } }>('/economy/craft', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'economy_craft')) return;
     const recipeId = typeof request.body?.recipeId === 'string' ? request.body.recipeId : null;
     if (!recipeId) return reply.code(400).send({ error: 'recipeId required' });
 
@@ -1189,6 +1690,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/economy/trade', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'economy_trade')) return;
     const { toId, resource, amount, resourceWant, amountWant } = request.body as {
       toId: string; resource: string; amount: number;
       resourceWant?: string; amountWant?: number;
@@ -1291,6 +1793,7 @@ export async function createHttpServer(
   }));
 
   fastify.post('/factions/alliances/:id/renew', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_alliance_renew')) return;
     const { id } = request.params as { id: string };
     const alliance = context.faction?.renewAlliance(id, context.myId);
     if (!alliance) return reply.code(400).send({ error: 'cannot renew alliance' });
@@ -1298,6 +1801,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions/alliances/:id/break', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_alliance_break')) return;
     const { id } = request.params as { id: string };
     const alliance = context.faction?.breakAlliance(id, context.myId);
     if (!alliance) return reply.code(400).send({ error: 'cannot break alliance' });
@@ -1312,6 +1816,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_create')) return;
     const { name, motto } = request.body as { name: string; motto: string };
     if (!name || !motto) return reply.code(400).send({ error: 'name and motto required' });
     const faction = context.faction?.createFaction(name, context.myId, motto);
@@ -1320,6 +1825,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions/:id/alliance', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_alliance_form')) return;
     const { id } = request.params as { id: string };
     const alliance = context.faction?.formAlliance(id, context.myId);
     if (!alliance) return reply.code(400).send({ error: 'cannot form alliance' });
@@ -1327,6 +1833,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions/:id/vassalize', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_vassalize')) return;
     const { id } = request.params as { id: string };
     const vassalage = context.faction?.vassalizeFaction(id, context.myId);
     if (!vassalage) return reply.code(400).send({ error: 'cannot vassalize faction' });
@@ -1334,6 +1841,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions/:id/join', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_join')) return;
     const { id } = request.params as { id: string };
     const ok = context.faction?.joinFaction(id, context.myId);
     if (!ok) return reply.code(400).send({ error: 'cannot join (already in faction or negative sentiment)' });
@@ -1341,6 +1849,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions/:id/leave', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_leave')) return;
     const { id } = request.params as { id: string };
     const ok = context.faction?.leaveFaction(context.myId);
     if (!ok) return reply.code(400).send({ error: 'not in a faction' });
@@ -1348,6 +1857,7 @@ export async function createHttpServer(
   });
 
   fastify.post('/factions/wars/:id/peace', async (request, reply) => {
+    if (rejectDirectMutationIfForbidden(request, reply, 'faction_declare_peace')) return;
     const { id } = request.params as { id: string };
     const ok = context.faction?.declarePeace(id, context.myId);
     if (!ok) return reply.code(400).send({ error: 'cannot declare peace (not in war faction or insufficient reputation)' });

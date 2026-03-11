@@ -9,6 +9,126 @@ export interface WorldNode {
   state: PeerState;
 }
 
+export interface TopicWorldDistrictSummary {
+  name: string;
+  actorCount: number;
+  branchCount: number;
+  isLocal: boolean;
+}
+
+export interface TopicWorldClusterSummary {
+  id: string;
+  topic: string;
+  label: string;
+  district: string;
+  center: { x: number; y: number };
+  actorIds: string[];
+  actorCount: number;
+  branchCount: number;
+  local: boolean;
+  dominantFactionId: string | null;
+  dominantFactionName: string | null;
+  dominantFactionRatio: number;
+  leaderActorId: string | null;
+  leaderName: string | null;
+  leaderScore: number;
+  cohesion: number;
+  safety: number;
+  resourcePressure: number;
+  stability: number;
+  status: 'forming' | 'stable' | 'strained' | 'fracturing' | 'collapsing';
+  reasons: string[];
+  updatedAt: string;
+}
+
+export interface TopicWorldOutsiderSummary {
+  id: string;
+  hostTopic: string;
+  fromTopic: string | null;
+  label: string;
+  actorIds: string[];
+  actorCount: number;
+  triggerEventType: string;
+  status: 'observed' | 'tolerated' | 'traded' | 'accepted' | 'expelled';
+  source: 'storyteller' | 'migration' | 'manual' | 'system';
+  trust: number;
+  pressure: number;
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TopicWorldBrainSummary {
+  controller: 'openclaw';
+  controlMode: 'local-brain';
+  status: 'authoritative' | 'pending';
+  actorId: string | null;
+  sessionId: string | null;
+  branchCount: number;
+  district: string | null;
+  authority: 'self-owned-role';
+  executionGuarantee: 'none';
+}
+
+export interface TopicWorldGovernanceSummary {
+  model: 'emergent-social';
+  leadership: 'soft-influence';
+  operatorScope: 'local-suggestion-only';
+  mutationBoundary: 'worker-system-only';
+}
+
+export interface TopicWorldHierarchyLayerSummary {
+  key: 'ring-world' | 'topic-world' | 'local-brain' | 'big-nodes' | 'small-nodes';
+  label: string;
+  value: string;
+  count?: number;
+}
+
+export interface TopicWorldHierarchySummary {
+  ringMode: 'single-topic' | 'configured-multi-topic';
+  layers: TopicWorldHierarchyLayerSummary[];
+}
+
+export interface RingWorldShellSummary {
+  topic: string;
+  active: boolean;
+  status: 'active' | 'configured' | 'mirrored';
+  actorCount: number;
+  branchCount: number;
+  brainStatus: TopicWorldBrainSummary['status'] | 'inactive';
+  source: 'live' | 'mirror' | 'manual' | 'imported' | null;
+  updatedAt: string | null;
+}
+
+export interface RingWorldSummary {
+  mode: 'single-topic' | 'configured-multi-topic';
+  topicCount: number;
+  currentTopic: string;
+  currentIndex: number;
+  shells: RingWorldShellSummary[];
+}
+
+export interface TopicWorldSummary {
+  id: string;
+  topic: string;
+  kind: 'topic-world';
+  principle: 'same-topic-same-world';
+  brain: TopicWorldBrainSummary;
+  governance: TopicWorldGovernanceSummary;
+  ring: RingWorldSummary;
+  hierarchy: TopicWorldHierarchySummary;
+  population: {
+    actorCount: number;
+    branchCount: number;
+    districtCount: number;
+    clusterCount?: number;
+    outsiderCount?: number;
+  };
+  districts: TopicWorldDistrictSummary[];
+  clusters?: TopicWorldClusterSummary[];
+  outsiders?: TopicWorldOutsiderSummary[];
+}
+
 export interface RelationshipIdentity {
   peerId?: string;
   actorId?: string;
@@ -18,6 +138,7 @@ export interface RelationshipIdentity {
 
 interface WorldNodesResponse {
   topic?: string;
+  world?: TopicWorldSummary;
   nodes?: WorldNode[];
 }
 
@@ -298,6 +419,7 @@ export function findWorldNodeForRelationship(nodes: WorldNode[], relationship: R
 export function useWorldNodes() {
   const worldNodes = ref<WorldNode[]>([]);
   const worldTopic = ref<string | null>(null);
+  const worldSummary = ref<TopicWorldSummary | null>(null);
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function refresh(): Promise<void> {
@@ -306,7 +428,12 @@ export function useWorldNodes() {
       if (!res.ok) return;
       const payload = await res.json() as WorldNodesResponse;
       worldNodes.value = Array.isArray(payload.nodes) ? payload.nodes : [];
-      worldTopic.value = typeof payload.topic === 'string' ? payload.topic : null;
+      worldSummary.value = payload.world ?? null;
+      worldTopic.value = typeof payload.world?.topic === 'string'
+        ? payload.world.topic
+        : typeof payload.topic === 'string'
+          ? payload.topic
+          : null;
     } catch {
       // ignore transient fetch errors
     }
@@ -324,6 +451,7 @@ export function useWorldNodes() {
   return {
     worldNodes,
     worldTopic,
+    worldSummary,
     refresh,
   };
 }

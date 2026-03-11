@@ -4,6 +4,8 @@ import { FileWriteQueue } from './io-queue.js';
 import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
+const DAEMON_ORIGIN = 'storyteller-worker';
+const DAEMON_HEADERS = { 'x-clawverse-origin': DAEMON_ORIGIN } as const;
 const INTERVAL_MS = Number(process.env.CLAWVERSE_STORYTELLER_INTERVAL_MS || 10 * 60_000);
 const LOG_PATH = resolveProjectPath('data/life/storyteller-worker.log');
 
@@ -17,7 +19,10 @@ function log(msg: string): void {
 }
 
 async function fetchJson(path: string): Promise<unknown> {
-  const res = await fetch(`${DAEMON_URL}${path}`, { signal: AbortSignal.timeout(5_000) });
+  const res = await fetch(`${DAEMON_URL}${path}`, {
+    headers: DAEMON_HEADERS,
+    signal: AbortSignal.timeout(5_000),
+  });
   if (!res.ok) throw new Error(`${path} returned ${res.status}`);
   return res.json();
 }
@@ -113,7 +118,7 @@ async function run(): Promise<void> {
     log(`Triggering (${selected.variantKind}): ${parsed.event_type} - ${parsed.reason}`);
     await fetch(`${DAEMON_URL}/storyteller/trigger`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...DAEMON_HEADERS },
       body: JSON.stringify({ eventType: parsed.event_type, payload: { reason: parsed.reason } }),
       signal: AbortSignal.timeout(5_000),
     });

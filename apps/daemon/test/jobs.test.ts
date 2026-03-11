@@ -854,3 +854,38 @@ test('startJob defers queued retry while cooldown is active', async () => {
     cleanup();
   }
 });
+
+test('queued migrate duties avoid duplicate target-topic reservations', async () => {
+  const { dbPath, cleanup } = makeTmp();
+  try {
+    const jobs = new JobsSystem({ dbPath });
+    const first = jobs.enqueueJob({
+      kind: 'migrate',
+      title: 'Prepare corridor to topic-beta',
+      reason: 'Route should be held by a single migration coordinator',
+      priority: 82,
+      payload: { toTopic: 'topic-beta', responseSquad: 'migration', assignee: 'route_scout' },
+      dedupeKey: 'autonomy-migrate-prepare',
+    });
+    const blocked = jobs.enqueueJob({
+      kind: 'migrate',
+      title: 'Duplicate corridor to topic-beta',
+      reason: 'Same route should conflict while first duty is active',
+      priority: 80,
+      payload: { toTopic: 'topic-beta', responseSquad: 'migration', assignee: 'refugee_coordinator' },
+      dedupeKey: 'autonomy-migrate-evacuate',
+    });
+
+    jobs.startJob(first.id, {
+      note: 'claimed:Route Scout',
+      payload: { executor: 'Route Scout', executorId: 'peer-a' },
+    });
+
+    const next = jobs.getNextQueuedJob([], [], 'peer-b');
+    assert.notEqual(next?.id, blocked.id);
+
+    await jobs.destroy();
+  } finally {
+    cleanup();
+  }
+});

@@ -2,8 +2,8 @@
   <section class="oc-panel">
     <div class="oc-header">
       <div>
-        <div class="oc-kicker">World Brain</div>
-        <div class="oc-title">OpenClaw Director</div>
+        <div class="oc-kicker">Actor Brain</div>
+        <div class="oc-title">OpenClaw Role Core</div>
       </div>
       <div class="oc-mood" :class="moodTone">{{ status?.mood ?? 'offline' }}</div>
     </div>
@@ -34,12 +34,24 @@
         <div class="oc-section-label">World Identity</div>
         <div class="oc-world-grid">
           <div class="oc-world-card">
+            <span class="oc-world-label">Ring</span>
+            <strong>{{ ringModeLabel }}</strong>
+          </div>
+          <div class="oc-world-card">
             <span class="oc-world-label">Topic</span>
-            <strong>{{ props.status?.topic ?? 'shared-topic' }}</strong>
+            <strong>{{ worldTopic }}</strong>
           </div>
           <div class="oc-world-card">
             <span class="oc-world-label">District</span>
             <strong>{{ currentDistrict }}</strong>
+          </div>
+          <div class="oc-world-card">
+            <span class="oc-world-label">Big Nodes</span>
+            <strong>{{ bigNodeCount }}</strong>
+          </div>
+          <div class="oc-world-card">
+            <span class="oc-world-label">Small Nodes</span>
+            <strong>{{ smallNodeCount }}</strong>
           </div>
           <div class="oc-world-card">
             <span class="oc-world-label">Actor</span>
@@ -50,25 +62,115 @@
             <strong>{{ sessionSignature }}</strong>
           </div>
         </div>
+        <div class="oc-intent-card">
+          <div class="oc-intent-topline">
+            <span class="oc-intent-title">Brain Topology</span>
+            <span class="oc-intent-state" :class="brainTone">{{ brainStatus }}</span>
+          </div>
+          <div class="oc-intent-copy">{{ topologyCopy }}</div>
+        </div>
+        <div v-if="hierarchyLayers.length" class="oc-intent-card">
+          <div class="oc-intent-topline">
+            <span class="oc-intent-title">Ring Alignment</span>
+            <span class="oc-intent-state stable">{{ hierarchyLayers.length }} layers</span>
+          </div>
+          <div class="oc-badges">
+            <span v-for="layer in hierarchyLayers" :key="layer.key" class="oc-badge">
+              {{ layer.label }} {{ layer.count ?? layer.value }}
+            </span>
+          </div>
+        </div>
       </div>
 
       <div class="oc-section">
-        <div class="oc-section-label">Autonomy Loop</div>
-
-        <div v-if="governor" class="oc-intent-card">
+        <div class="oc-section-label">Operator Guidance</div>
+        <div class="oc-intent-card">
           <div class="oc-intent-topline">
-            <span class="oc-intent-title">{{ governorModeLabel }}</span>
-            <span class="oc-intent-state" :class="governorTone">{{ governor.focusLane }}</span>
+            <span class="oc-intent-title">Soft Suggestions</span>
+            <span class="oc-intent-state stable">{{ guidance.length }} active</span>
           </div>
-          <div class="oc-intent-copy">{{ governor.summary }}</div>
+          <div class="oc-intent-copy">
+            Suggestions are treated as preferences. OpenClaw may ignore them if unsafe or impossible.
+          </div>
+          <label class="oc-note-field">
+            <span class="oc-note-label">Suggestion</span>
+            <input
+              v-model="guidanceDraft"
+              class="oc-note-input"
+              type="text"
+              maxlength="400"
+              placeholder="Example: prioritize shelter, avoid raids, head to Market, prepare migration..."
+            />
+          </label>
+          <div class="oc-run-grid">
+            <button class="oc-run-btn" :disabled="!guidanceDraft.trim()" @click="submitGuidanceNote">Suggest</button>
+          </div>
+          <div v-if="guidanceMessage" class="oc-run-note stable">{{ guidanceMessage }}</div>
+          <div v-if="guidanceError" class="oc-run-note critical">{{ guidanceError }}</div>
+        </div>
+
+        <div v-if="guidance.length" class="oc-guidance-list">
+          <article v-for="item in guidance" :key="item.id" class="oc-guidance-card">
+            <div class="oc-guidance-topline">
+              <span class="oc-guidance-kind">{{ item.kind }}</span>
+              <span class="oc-guidance-expiry">{{ formatGuidanceTime(item.expiresAt) }}</span>
+            </div>
+            <div class="oc-guidance-message">{{ item.message }}</div>
+            <div class="oc-guidance-actions">
+              <button class="oc-run-btn" @click="dismissGuidance(item.id)">Dismiss</button>
+            </div>
+          </article>
+        </div>
+        <div v-else class="oc-empty">
+          No active guidance. Use suggestions to steer, not command.
+        </div>
+      </div>
+
+      <div class="oc-section">
+        <div class="oc-section-label">Coordination Loop</div>
+
+        <div v-if="coordinationSignal" class="oc-intent-card">
+          <div class="oc-intent-topline">
+            <span class="oc-intent-title">{{ coordinationModeLabel }}</span>
+            <span class="oc-intent-state" :class="coordinationTone">{{ coordinationSignal.focusLane }}</span>
+          </div>
+          <div class="oc-intent-copy">{{ coordinationSignal.summary }}</div>
           <div class="oc-intent-meta">
-            <span>Pressure {{ governor.pressure }}</span>
-            <span>Confidence {{ governor.confidence }}</span>
+            <span>Signal {{ coordinationSignal.pressure }}</span>
+            <span>Confidence {{ coordinationSignal.confidence }}</span>
+            <span>Authority {{ autonomyAuthorityLabel }}</span>
           </div>
           <div class="oc-badges">
-            <span v-for="lane in governorLanes" :key="lane.key" class="oc-badge">
+            <span v-for="lane in coordinationLanes" :key="lane.key" class="oc-badge">
               {{ lane.label }} {{ lane.score }}
             </span>
+          </div>
+        </div>
+
+        <div v-if="autonomyIntents.length" class="oc-intent-card">
+          <div class="oc-intent-topline">
+            <span class="oc-intent-title">Intent Queue</span>
+            <span class="oc-intent-state stable">{{ autonomyIntents.length }} tracked</span>
+          </div>
+          <div class="oc-intent-list">
+            <article
+              v-for="intent in autonomyIntents"
+              :key="intent.dedupeKey"
+              class="oc-intent-row"
+              :class="{ current: intent.isCurrent }"
+            >
+              <div class="oc-intent-row-topline">
+                <span class="oc-intent-row-title">#{{ intent.rank }} {{ intent.title }}</span>
+                <span class="oc-intent-row-score">P{{ intent.finalPriority }}</span>
+              </div>
+              <div class="oc-intent-row-meta">
+                <span>{{ intent.laneLabel }}</span>
+                <span>{{ intent.kindLabel }}</span>
+                <span>{{ intent.sourceLabel }}</span>
+                <span v-if="intent.isCurrent">current hit</span>
+              </div>
+              <div v-if="intent.reason" class="oc-intent-row-reason">{{ intent.reason }}</div>
+            </article>
           </div>
         </div>
 
@@ -81,11 +183,15 @@
           <div class="oc-intent-meta">
             <span v-if="currentJob.sourceEventType">Source {{ currentJob.sourceEventType.replace(/_/g, ' ') }}</span>
             <span>Priority {{ currentJob.priority }}</span>
+            <span v-if="currentJobIntent">Intent #{{ currentJobIntent.rank }}</span>
+            <span v-if="currentJobIntent">Score {{ currentJobIntent.score }}</span>
+            <span v-if="currentJobIntent?.authority">{{ currentJobIntent.authority }}</span>
           </div>
+          <div v-if="currentJobIntent?.reason" class="oc-intent-row-reason">{{ currentJobIntent.reason }}</div>
         </div>
 
         <div v-else class="oc-empty">
-          No active job. OpenClaw is watching the shared topic world.
+          No active job. OpenClaw is holding the local actor brain and watching the topic world.
         </div>
       </div>
 
@@ -216,8 +322,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useBrainGuidance } from '../composables/useBrainGuidance';
 import type { ColonyStatus, NeedsState, SkillsState } from '../composables/useColonyState';
 import type { JobInfo } from '../composables/useJobs';
+import type { TopicWorldSummary } from '../composables/useWorldNodes';
 
 interface EvolutionRunInfo {
   step: string;
@@ -289,6 +397,7 @@ interface EvolutionStatus {
 
 const props = defineProps<{
   status: ColonyStatus | null;
+  world?: TopicWorldSummary | null;
   needs: NeedsState | null;
   skills: SkillsState | null;
   jobs: JobInfo[];
@@ -301,10 +410,55 @@ const runNote = ref('');
 const runPending = ref(false);
 const actionMessage = ref('');
 const actionError = ref('');
+const guidanceDraft = ref('');
+const guidanceMessage = ref('');
+const guidanceError = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 
+const { guidance, create: createGuidance, dismiss: dismissGuidanceEntry } = useBrainGuidance();
+
 const selfState = computed(() => props.status?.state ?? null);
-const governor = computed(() => props.status?.governor ?? null);
+const worldSummary = computed(() => props.world ?? props.status?.world ?? null);
+const coordinationSignal = computed(() => props.status?.coordination ?? props.status?.governor ?? null);
+const currentJob = computed(() => {
+  return props.jobs.find((job) => job.status === 'active')
+    ?? props.jobs.find((job) => job.status === 'queued')
+    ?? null;
+});
+const autonomyIntents = computed(() => {
+  const intents = props.status?.autonomy?.intents;
+  if (!Array.isArray(intents)) return [];
+
+  return intents.slice(0, 5).map((intent, index) => ({
+    rank: typeof intent.rank === 'number' ? intent.rank : 0,
+    dedupeKey: typeof intent.dedupeKey === 'string' ? intent.dedupeKey : `intent-${index}`,
+    title: typeof intent.title === 'string' ? intent.title : 'Untitled intent',
+    finalPriority: typeof intent.finalPriority === 'number' ? Math.max(0, Math.min(100, Math.round(intent.finalPriority))) : 0,
+    laneLabel: formatIntentToken(intent.lane),
+    kindLabel: formatIntentToken(intent.kind),
+    sourceLabel: formatIntentSource(intent.sourceEventType),
+    reason: Array.isArray(intent.reasons) && typeof intent.reasons[0] === 'string' ? intent.reasons[0] : '',
+    isCurrent: isCurrentIntentHit(intent.dedupeKey, currentJob.value?.dedupeKey),
+  }));
+});
+const currentJobIntent = computed(() => {
+  const payload = currentJob.value?.payload;
+  if (!payload || typeof payload !== 'object') return null;
+
+  const rank = payloadNumberAny(payload, ['autonomyIntentRank', 'strategicIntentRank']);
+  const score = payloadNumberAny(payload, ['autonomyIntentScore', 'strategicIntentScore']);
+  const reasons = payloadStringListAny(payload, ['autonomyIntentReasons', 'strategicIntentReasons']);
+  const authority = payloadStringAny(payload, ['autonomyAuthority', 'strategicAuthority']);
+
+  if (rank === null && score === null && reasons.length === 0 && !authority) return null;
+
+  return {
+    rank: rank ?? 0,
+    score: score ?? 0,
+    reason: reasons[0] ?? '',
+    authority: authority || '',
+  };
+});
 const activeRun = computed(() => evolution.value?.runner?.active ?? null);
 const lastRun = computed(() => evolution.value?.runner?.last ?? null);
 const recentAudit = computed(() => auditEntries.value.slice(0, 6));
@@ -314,6 +468,11 @@ const autopilotConfig = computed(() => evolution.value?.config?.autopilot ?? nul
 const totalEpisodes = computed(() => Number(evolution.value?.stats?.total ?? 0));
 const gateStatus = computed(() => rollout.value?.healthGate?.status ?? 'pending');
 const rolloutRatio = computed(() => `${Math.round(Number(rollout.value?.candidateRatio ?? 0) * 100)}%`);
+const worldTopic = computed(() => worldSummary.value?.topic ?? props.status?.topic ?? 'shared-topic');
+const ringModeLabel = computed(() => worldSummary.value?.hierarchy.ringMode ?? 'single-topic');
+const hierarchyLayers = computed(() => worldSummary.value?.hierarchy.layers ?? []);
+const bigNodeCount = computed(() => worldSummary.value?.population.actorCount ?? props.status?.knownActors ?? props.status?.knownPeers ?? 0);
+const smallNodeCount = computed(() => worldSummary.value?.population.branchCount ?? props.status?.knownPeers ?? bigNodeCount.value);
 const globalCooldownLabel = computed(() => {
   const remainingMs = cooldowns.value?.globalRemainingMs ?? 0;
   if (remainingMs <= 0) return 'ready';
@@ -345,12 +504,6 @@ const auditFilters = [
   { key: 'daemon-policy', label: 'Policy' },
 ] as const;
 
-const currentJob = computed(() => {
-  return props.jobs.find((job) => job.status === 'active')
-    ?? props.jobs.find((job) => job.status === 'queued')
-    ?? null;
-});
-
 const moodTone = computed(() => {
   const mood = props.status?.mood ?? 'offline';
   if (['distressed', 'stressed'].includes(mood)) return 'critical';
@@ -358,8 +511,15 @@ const moodTone = computed(() => {
   return 'stable';
 });
 
-const governorTone = computed(() => {
-  const pressure = governor.value?.pressure ?? 0;
+const brainTone = computed(() => {
+  if (worldSummary.value?.brain.status === 'authoritative') return 'stable';
+  return 'watch';
+});
+
+const brainStatus = computed(() => worldSummary.value?.brain.status ?? 'pending');
+
+const coordinationTone = computed(() => {
+  const pressure = coordinationSignal.value?.pressure ?? 0;
   if (pressure >= 80) return 'critical';
   if (pressure >= 55) return 'watch';
   return 'stable';
@@ -372,18 +532,21 @@ const evolutionTone = computed(() => {
   return 'watch';
 });
 
-const governorModeLabel = computed(() => {
-  const mode = governor.value?.mode ?? 'consolidate';
-  if (mode === 'survive') return 'Governor: Survival';
-  if (mode === 'fortify') return 'Governor: Fortify';
-  if (mode === 'recover') return 'Governor: Recovery';
-  if (mode === 'expand') return 'Governor: Expansion';
-  if (mode === 'dominate') return 'Governor: Dominance';
-  return 'Governor: Consolidation';
+const coordinationModeLabel = computed(() => {
+  const mode = coordinationSignal.value?.mode ?? 'consolidate';
+  const prefix = 'Emergent coordinator (advisory)';
+  if (mode === 'survive') return `${prefix}: Survival`;
+  if (mode === 'fortify') return `${prefix}: Fortify`;
+  if (mode === 'recover') return `${prefix}: Recovery`;
+  if (mode === 'expand') return `${prefix}: Expansion`;
+  if (mode === 'dominate') return `${prefix}: Dominance`;
+  return `${prefix}: Consolidation`;
 });
 
-const governorLanes = computed(() => {
-  const laneScores = governor.value?.laneScores ?? {};
+const autonomyAuthorityLabel = computed(() => 'hint-only');
+
+const coordinationLanes = computed(() => {
+  const laneScores = coordinationSignal.value?.laneScores ?? {};
   return [
     { key: 'wartime', label: 'War', score: Math.round(laneScores.wartime ?? 0) },
     { key: 'economy', label: 'Economy', score: Math.round(laneScores.economy ?? 0) },
@@ -417,20 +580,131 @@ const skillEntries = computed(() => {
 });
 
 const currentDistrict = computed(() => {
+  const summaryDistrict = worldSummary.value?.brain.district;
+  if (summaryDistrict) return summaryDistrict;
   const state = selfState.value;
   if (!state) return 'unknown';
   return state.spawnDistrict ?? districtName(state.position);
 });
 
 const actorSignature = computed(() => {
-  const actorId = selfState.value?.actorId ?? props.status?.actorId ?? selfState.value?.dna.id ?? null;
+  const actorId = worldSummary.value?.brain.actorId ?? selfState.value?.actorId ?? props.status?.actorId ?? selfState.value?.dna.id ?? null;
   return shortId(actorId);
 });
 
 const sessionSignature = computed(() => {
-  const sessionId = selfState.value?.sessionId ?? props.status?.id ?? selfState.value?.id ?? null;
+  const sessionId = worldSummary.value?.brain.sessionId ?? selfState.value?.sessionId ?? props.status?.id ?? selfState.value?.id ?? null;
   return shortId(sessionId);
 });
+
+const topologyCopy = computed(() => {
+  const summary = worldSummary.value;
+  if (!summary) {
+    return 'OpenClaw owns the local actor brain. The ring world is currently running as a single-topic shell, and each session under an actor is treated as a small node branch.';
+  }
+  return `OpenClaw fully owns the local actor brain on ${summary.brain.actorId?.slice(0, 8) ?? 'pending'}. The ring world is in ${summary.hierarchy.ringMode} mode across ${summary.ring.topicCount} tracked topic${summary.ring.topicCount === 1 ? '' : 's'}, ${summary.population.actorCount} big nodes sharing topic ${summary.topic} form the active world, and ${summary.population.branchCount} small nodes are currently attached as session branches.`;
+});
+
+async function submitGuidanceNote(): Promise<void> {
+  guidanceMessage.value = '';
+  guidanceError.value = '';
+  const message = guidanceDraft.value.trim();
+  if (!message) return;
+
+  const res = await createGuidance({
+    kind: 'note',
+    message,
+    ttlMs: 30 * 60_000,
+  });
+  if (!res.ok) {
+    guidanceError.value = res.error || 'suggestion_failed';
+    return;
+  }
+  guidanceDraft.value = '';
+  guidanceMessage.value = 'Suggestion recorded.';
+  setTimeout(() => { guidanceMessage.value = ''; }, 2000);
+}
+
+async function dismissGuidance(id: string): Promise<void> {
+  guidanceMessage.value = '';
+  guidanceError.value = '';
+  const ok = await dismissGuidanceEntry(id);
+  if (!ok) {
+    guidanceError.value = 'dismiss_failed';
+    return;
+  }
+  guidanceMessage.value = 'Dismissed.';
+  setTimeout(() => { guidanceMessage.value = ''; }, 1500);
+}
+
+function formatGuidanceTime(value: string | null | undefined): string {
+  if (!value) return 'sticky';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatIntentToken(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return 'unknown';
+  return raw
+    .split('_')
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatIntentSource(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return 'signal:unknown';
+  return `signal:${raw.replace(/_/g, ' ')}`;
+}
+
+function payloadString(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function payloadNumber(payload: Record<string, unknown>, key: string): number | null {
+  const value = payload[key];
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
+}
+
+function payloadStringList(payload: Record<string, unknown>, key: string): string[] {
+  const value = payload[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function payloadStringAny(payload: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = payloadString(payload, key);
+    if (value) return value;
+  }
+  return '';
+}
+
+function payloadNumberAny(payload: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = payloadNumber(payload, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function payloadStringListAny(payload: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = payloadStringList(payload, key);
+    if (value.length > 0) return value;
+  }
+  return [];
+}
+
+function isCurrentIntentHit(intentKey: unknown, jobKey: unknown): boolean {
+  return typeof intentKey === 'string'
+    && typeof jobKey === 'string'
+    && intentKey.trim().length > 0
+    && intentKey === jobKey;
+}
 
 function needTone(value: number): 'stable' | 'watch' | 'critical' {
   if (value < 15) return 'critical';
@@ -611,6 +885,45 @@ onUnmounted(() => {
   color: var(--text-muted);
 }
 
+.oc-guidance-list {
+  display: grid;
+  gap: 10px;
+}
+
+.oc-guidance-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(237, 243, 247, 0.94));
+  box-shadow: var(--shadow-pressed);
+}
+
+.oc-guidance-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.oc-guidance-message {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-body);
+}
+
+.oc-guidance-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .oc-title {
   margin-top: 2px;
   font-family: var(--font-display);
@@ -708,6 +1021,60 @@ onUnmounted(() => {
 .oc-intent-state.cancelled {
   color: #b42343;
   background: rgba(220, 38, 38, 0.14);
+}
+
+.oc-intent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.oc-intent-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-soft);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.oc-intent-row.current {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: rgba(219, 234, 254, 0.55);
+}
+
+.oc-intent-row-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.oc-intent-row-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.oc-intent-row-score {
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: #2563eb;
+}
+
+.oc-intent-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.oc-intent-row-reason {
+  font-size: 0.67rem;
+  color: var(--text-body);
+  line-height: 1.4;
 }
 
 .oc-needs-grid,

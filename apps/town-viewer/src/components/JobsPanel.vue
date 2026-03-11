@@ -23,15 +23,24 @@
         <span v-if="dutyLabel(job)" class="jp-duty">{{ dutyLabel(job) }}</span>
         <span v-if="raidSourceLabel(job)" class="jp-duty source">{{ raidSourceLabel(job) }}</span>
       </div>
-      <div v-if="strategicLaneLabel(job) || strategicModeLabel(job) || laneLabel(job) || assigneeLabel(job) || executorLabel(job) || stageLabel(job)" class="jp-duty-row">
-        <span v-if="strategicLaneLabel(job)" class="jp-duty strategic">Focus {{ strategicLaneLabel(job) }}</span>
-        <span v-if="strategicModeLabel(job)" class="jp-duty strategic-mode">{{ strategicModeLabel(job) }}</span>
+      <div v-if="coordinationLaneLabel(job) || coordinationModeLabel(job) || laneLabel(job) || assigneeLabel(job) || executorLabel(job) || stageLabel(job) || migrationTargetLabel(job) || migrationStrategyLabel(job) || migrationUrgencyLabel(job)" class="jp-duty-row">
+        <span v-if="coordinationLaneLabel(job)" class="jp-duty strategic">Coord {{ coordinationLaneLabel(job) }}</span>
+        <span v-if="coordinationModeLabel(job)" class="jp-duty strategic-mode">{{ coordinationModeLabel(job) }}</span>
         <span v-if="laneLabel(job)" class="jp-duty lane">Lane {{ laneLabel(job) }}</span>
         <span v-if="assigneeLabel(job)" class="jp-duty assignee">Assignee {{ assigneeLabel(job) }}</span>
         <span v-if="executorLabel(job)" class="jp-duty executor">Executor {{ executorLabel(job) }}</span>
         <span v-if="stageLabel(job)" class="jp-duty stage">Stage {{ stageLabel(job) }}</span>
+        <span v-if="migrationTargetLabel(job)" class="jp-duty migration-target">Route {{ migrationTargetLabel(job) }}</span>
+        <span v-if="migrationStrategyLabel(job)" class="jp-duty migration-strategy">Plan {{ migrationStrategyLabel(job) }}</span>
+        <span v-if="migrationUrgencyLabel(job)" class="jp-duty migration-urgency">Urgency {{ migrationUrgencyLabel(job) }}</span>
       </div>
-      <div v-if="strategicObjectiveLabel(job)" class="jp-strategy">{{ strategicObjectiveLabel(job) }}</div>
+      <div v-if="coordinationObjectiveLabel(job)" class="jp-strategy">{{ coordinationObjectiveLabel(job) }}</div>
+      <div v-if="intentRankLabel(job) || intentScoreLabel(job) || intentAuthorityLabel(job)" class="jp-duty-row">
+        <span v-if="intentRankLabel(job)" class="jp-duty intent">Intent {{ intentRankLabel(job) }}</span>
+        <span v-if="intentScoreLabel(job)" class="jp-duty intent-score">Score {{ intentScoreLabel(job) }}</span>
+        <span v-if="intentAuthorityLabel(job)" class="jp-duty intent-authority">{{ intentAuthorityLabel(job) }}</span>
+      </div>
+      <div v-if="intentReasonLabel(job)" class="jp-intent-reason">{{ intentReasonLabel(job) }}</div>
       <div v-if="retryLabel(job) || cooldownLabel(job) || peerLabel(job)" class="jp-duty-row">
         <span v-if="retryLabel(job)" class="jp-duty retry">{{ retryLabel(job) }}</span>
         <span v-if="cooldownLabel(job)" class="jp-duty cooldown">{{ cooldownLabel(job) }}</span>
@@ -73,6 +82,14 @@ function payloadText(job: JobInfo, key: string): string {
   return typeof value === 'string' ? value : '';
 }
 
+function payloadTextAny(job: JobInfo, keys: string[]): string {
+  for (const key of keys) {
+    const value = payloadText(job, key);
+    if (value) return value;
+  }
+  return '';
+}
+
 function roleLabel(job: JobInfo): string {
   const role = payloadText(job, 'role');
   return role ? role.replace(/_/g, ' ') : '';
@@ -88,18 +105,64 @@ function raidSourceLabel(job: JobInfo): string {
   return source ? source.replace(/_/g, ' ') : '';
 }
 
-function strategicLaneLabel(job: JobInfo): string {
-  const lane = payloadText(job, 'strategicLane');
+function coordinationLaneLabel(job: JobInfo): string {
+  const lane = payloadTextAny(job, ['autonomyLane', 'strategicLane']);
   return lane ? lane.replace(/_/g, ' ') : '';
 }
 
-function strategicModeLabel(job: JobInfo): string {
-  const mode = payloadText(job, 'strategicMode');
+function coordinationModeLabel(job: JobInfo): string {
+  const mode = payloadTextAny(job, ['autonomyMode', 'strategicMode']);
   return mode ? mode.replace(/_/g, ' ') : '';
 }
 
-function strategicObjectiveLabel(job: JobInfo): string {
-  return payloadText(job, 'strategicObjective');
+function coordinationObjectiveLabel(job: JobInfo): string {
+  return payloadTextAny(job, ['autonomyObjective', 'strategicObjective']);
+}
+
+function payloadNumber(job: JobInfo, key: string): number | null {
+  const value = job.payload?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
+}
+
+function payloadNumberAny(job: JobInfo, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = payloadNumber(job, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function payloadStringList(job: JobInfo, key: string): string[] {
+  const value = job.payload?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function payloadStringListAny(job: JobInfo, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = payloadStringList(job, key);
+    if (value.length > 0) return value;
+  }
+  return [];
+}
+
+function intentRankLabel(job: JobInfo): string {
+  const rank = payloadNumberAny(job, ['autonomyIntentRank', 'strategicIntentRank']);
+  return rank === null ? '' : `#${rank}`;
+}
+
+function intentScoreLabel(job: JobInfo): string {
+  const score = payloadNumberAny(job, ['autonomyIntentScore', 'strategicIntentScore']);
+  return score === null ? '' : String(score);
+}
+
+function intentAuthorityLabel(job: JobInfo): string {
+  const authority = payloadTextAny(job, ['autonomyAuthority', 'strategicAuthority']);
+  return authority ? authority.replace(/_/g, ' ') : '';
+}
+
+function intentReasonLabel(job: JobInfo): string {
+  return payloadStringListAny(job, ['autonomyIntentReasons', 'strategicIntentReasons'])[0] ?? '';
 }
 
 function laneLabel(job: JobInfo): string {
@@ -118,6 +181,20 @@ function executorLabel(job: JobInfo): string {
 function stageLabel(job: JobInfo): string {
   const stage = payloadText(job, 'stage');
   return stage ? stage.replace(/_/g, ' ') : '';
+}
+
+function migrationTargetLabel(job: JobInfo): string {
+  return payloadText(job, 'toTopic') || payloadText(job, 'targetTopic');
+}
+
+function migrationStrategyLabel(job: JobInfo): string {
+  const strategy = payloadText(job, 'migrationStrategy');
+  return strategy ? strategy.replace(/_/g, ' ') : '';
+}
+
+function migrationUrgencyLabel(job: JobInfo): string {
+  const urgency = payloadNumber(job, 'migrationUrgency');
+  return urgency === null ? '' : String(urgency);
 }
 
 function retryLabel(job: JobInfo): string {
@@ -256,6 +333,7 @@ function formatTime(iso: string): string {
 
 .jp-meta,
 .jp-strategy,
+.jp-intent-reason,
 .jp-reason,
 .jp-note,
 .jp-duty {
@@ -324,6 +402,21 @@ function formatTime(iso: string): string {
   background: rgba(20, 184, 166, 0.14);
 }
 
+.jp-duty.migration-target {
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.jp-duty.migration-strategy {
+  color: #065f46;
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.jp-duty.migration-urgency {
+  color: #9a3412;
+  background: rgba(249, 115, 22, 0.14);
+}
+
 .jp-duty.retry {
   color: #7c2d12;
   background: rgba(249, 115, 22, 0.14);
@@ -337,6 +430,25 @@ function formatTime(iso: string): string {
 .jp-duty.peer {
   color: #1d4ed8;
   background: rgba(59, 130, 246, 0.14);
+}
+
+.jp-duty.intent {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.14);
+}
+
+.jp-duty.intent-score {
+  color: #2563eb;
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.jp-duty.intent-authority {
+  color: #0f766e;
+  background: rgba(20, 184, 166, 0.14);
+}
+
+.jp-intent-reason {
+  color: var(--text-strong);
 }
 
 .jp-reason {

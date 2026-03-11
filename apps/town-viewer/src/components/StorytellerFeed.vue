@@ -150,6 +150,8 @@ function describe(event: FeedEvent): string {
   if (event.type === 'resource_drought' && payload.subtype === 'trade_blocked') return `Trade with ${String(payload.peerId ?? 'peer')} was blocked.`;
   if (event.type === 'resource_drought') return 'Compute resources are thinning across the town.';
   if (event.type === 'resource_windfall' && payload.subtype === 'trade_settled') return `Trade completed, received ${String(payload.amount ?? '?')} ${String(payload.resource ?? 'resources')}.`;
+  if (event.type === 'resource_windfall' && payload.subtype === 'outsider_accepted') return `${String(payload.label ?? 'An outsider group')} has been accepted into the local world.`;
+  if (event.type === 'resource_windfall' && payload.subtype === 'outsider_trade') return `${String(payload.label ?? 'An outsider group')} is now trading under supervision.`;
   if (event.type === 'resource_windfall') return 'A knowledge cache surfaced and pressure eased.';
   if (event.type === 'need_critical') return `${payload.need} need has entered a critical band.`;
   if (event.type === 'faction_founding') return `A faction forms with ${payload.allyCount} allies.`;
@@ -157,9 +159,18 @@ function describe(event: FeedEvent): string {
   if (event.type === 'mood_crisis') return `Distress is spreading through ${payload.count ?? 1} nodes.`;
   if (event.type === 'building_completed') return `A ${payload.buildingType} was constructed.`;
   if (event.type === 'betrayal' && payload.allianceId) return 'A faction alliance collapsed under pressure.';
+  if (event.type === 'betrayal' && payload.subtype === 'outsider_expelled') return `${String(payload.label ?? 'An outsider group')} has been expelled.`;
   if (event.type === 'betrayal') return 'An ally has become a nemesis.';
   if (event.type === 'peace_treaty') return 'Old rivals reached a peace treaty.';
-  if (event.type === 'stranger_arrival') return 'A new peer enters the town.';
+  if (event.type === 'stranger_arrival') {
+    if (payload.triggered_by === 'great_migration') {
+    if (payload.subtype === 'outsider_tolerated') {
+      return `${String(payload.label ?? 'An outsider group')} is being tolerated near the perimeter.`;
+    }
+    return `Outsiders are arriving after migration pressure from ${String(payload.fromTopic ?? 'another topic')}.`;
+  }
+    return 'A new peer enters the town.';
+  }
   if (event.type === 'faction_war') return 'Factions are clashing in open conflict.';
   if (event.type === 'faction_alliance') return 'Two factions have forged a formal alliance.';
   if (event.type === 'raid_alert') return `Raid alert: ${String(payload.severity ?? 'unknown')} ${String(payload.source ?? 'threat')} targeting ${String(payload.objective ?? 'pressure')}. Countermeasure: ${String(payload.countermeasure ?? payload.recommendedPosture ?? 'guarded response')}.`;
@@ -174,7 +185,12 @@ function describe(event: FeedEvent): string {
   if (event.type === 'death') return `${String(payload.factionName ?? 'The settlement')} has lost its core.`;
   if (event.type === 'faction_ascendant') return `${String(payload.factionName ?? 'A faction')} has risen to dominate the town.`;
   if (event.type === 'faction_splintering') return `${String(payload.factionName ?? 'A faction')} is fracturing under pressure.`;
-  if (event.type === 'great_migration') return 'A mass migration is underway.';
+  if (event.type === 'great_migration') {
+    if (payload.toTopic) {
+      return `A refugee squad is evacuating toward ${String(payload.toTopic)}.`;
+    }
+    return 'A mass migration is underway.';
+  }
   if (event.type === 'cpu_storm') return 'CPU storm: processing is under heavy load.';
   if (event.type === 'storage_overflow') return 'Storage overflow: cleanup is required.';
   if (event.type === 'rumor_spreading') return 'A rumor is propagating through the network.';

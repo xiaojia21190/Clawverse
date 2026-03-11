@@ -1,7 +1,8 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import type { CombatStatus } from './useCombat';
 import type { PeerState } from './usePeers';
-import type { GovernorState, HardwareMetrics } from './useStatus';
+import type { CoordinationSignalState, HardwareMetrics, WorkerHealthSummary } from './useStatus';
+import type { TopicWorldSummary } from './useWorldNodes';
 
 export interface NeedsState {
   social: number;
@@ -31,8 +32,35 @@ export interface ColonyStatus {
   mood: string;
   metrics: HardwareMetrics | null;
   state: PeerState | null;
+  world?: TopicWorldSummary | null;
   combat: CombatStatus | null;
-  governor?: GovernorState | null;
+  autonomy?: {
+    orchestrationMode?: 'advisory';
+    contract?: {
+      actorAutonomy: 'openclaw-per-actor';
+      worldGovernance: 'emergent-social';
+      leaderAuthority: 'soft-influence';
+      operatorScope: 'local-suggestion-only';
+      worldMutationAccess: 'worker-system-only';
+      migrationUnit: 'squad';
+      primaryMigrationTrigger: 'survival';
+    };
+    intents?: Array<{
+      rank: number;
+      lane: string;
+      kind: string;
+      title: string;
+      sourceEventType: string;
+      dedupeKey: string;
+      basePriority: number;
+      finalPriority: number;
+      score: number;
+      reasons: string[];
+    }>;
+    workerHealth?: WorkerHealthSummary | null;
+  } | null;
+  coordination?: CoordinationSignalState | null;
+  governor?: CoordinationSignalState | null;
   connectedPeers: number;
   knownPeers: number;
   knownActors?: number;

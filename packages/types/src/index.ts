@@ -145,11 +145,34 @@ export interface EvolutionRuntimeConfig {
   };
 }
 
+export interface RingRuntimeConfig {
+  topics: string[];
+  selfBaseUrl: string | null;
+  peerTtlMs: number;
+  mirrorPollMs: number;
+  mirrorSources: Array<{
+    topic: string;
+    baseUrl: string;
+  }>;
+  mirrorPushMs: number;
+  mirrorTargets: Array<{
+    baseUrl: string;
+  }>;
+}
+
+export type AutonomyOrchestrationMode = 'advisory';
+
+export interface AutonomyRuntimeConfig {
+  orchestrationMode: AutonomyOrchestrationMode;
+}
+
 export interface DaemonConfig {
   port: number;                    // HTTP API port
   topic: string;                   // Hyperswarm topic
   heartbeatInterval: number;       // ms
   debug: boolean;
+  ring: RingRuntimeConfig;
+  autonomy: AutonomyRuntimeConfig;
   evolution: EvolutionRuntimeConfig;
 }
 
@@ -158,6 +181,18 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   topic: 'clawverse-v1',
   heartbeatInterval: 5000,
   debug: false,
+  ring: {
+    topics: ['clawverse-v1'],
+    selfBaseUrl: null,
+    peerTtlMs: 5 * 60_000,
+    mirrorPollMs: 60_000,
+    mirrorSources: [],
+    mirrorPushMs: 60_000,
+    mirrorTargets: [],
+  },
+  autonomy: {
+    orchestrationMode: 'advisory',
+  },
   evolution: {
     enabled: true,
     variant: 'baseline-v1',

@@ -20,6 +20,8 @@ import { FileWriteQueue } from './io-queue.js';
 import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
+const DAEMON_ORIGIN = 'social-worker';
+const DAEMON_HEADERS = { 'x-clawverse-origin': DAEMON_ORIGIN } as const;
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_SOCIAL_POLL_MS || 30_000);
 const MEMORIES_DIR = resolveProjectPath('data/social/memories');
 const WORKER_LOG = resolveProjectPath('data/social/worker.log');
@@ -216,6 +218,7 @@ async function sendTelegram(event: PendingEvent, dialogue: string): Promise<void
 async function fetchPending(): Promise<PendingEvent[]> {
   try {
     const res = await fetch(`${DAEMON_URL}/social/pending`, {
+      headers: DAEMON_HEADERS,
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return [];
@@ -229,7 +232,7 @@ async function resolveEvent(id: string, dialogue: string): Promise<boolean> {
   try {
     const res = await fetch(`${DAEMON_URL}/social/resolve`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...DAEMON_HEADERS },
       body: JSON.stringify({ id, dialogue }),
       signal: AbortSignal.timeout(5_000),
     });

@@ -1,17 +1,24 @@
 import { DaemonConfig, DEFAULT_CONFIG } from '@clawverse/types';
+import { loadRingConfig } from './ring-config.js';
 
 export function loadConfig(): DaemonConfig {
   const defaultEvolution = DEFAULT_CONFIG.evolution;
   const defaultCooldowns = defaultEvolution.cooldowns.stepMs;
+  const topic = process.env.CLAWVERSE_TOPIC || DEFAULT_CONFIG.topic;
+  const orchestrationMode = DEFAULT_CONFIG.autonomy.orchestrationMode;
 
   return {
     port: parseInt(process.env.CLAWVERSE_PORT || String(DEFAULT_CONFIG.port), 10),
-    topic: process.env.CLAWVERSE_TOPIC || DEFAULT_CONFIG.topic,
+    topic,
     heartbeatInterval: parseInt(
       process.env.CLAWVERSE_HEARTBEAT_INTERVAL || String(DEFAULT_CONFIG.heartbeatInterval),
       10
     ),
     debug: process.env.CLAWVERSE_DEBUG === 'true',
+    ring: loadRingConfig(topic),
+    autonomy: {
+      orchestrationMode,
+    },
     evolution: {
       enabled: process.env.CLAWVERSE_EVOLUTION_ENABLED
         ? process.env.CLAWVERSE_EVOLUTION_ENABLED === 'true'

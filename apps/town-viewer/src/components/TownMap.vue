@@ -93,18 +93,22 @@ async function handleCellClick(idx: number): Promise<void> {
   moveError.value = '';
 
   try {
-    const res = await fetch('/move', {
+    const res = await fetch('/brain/guidance', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ x, y }),
+      body: JSON.stringify({
+        kind: 'move',
+        payload: { x, y },
+        ttlMs: 10 * 60_000,
+      }),
     });
     if (!res.ok) {
-      moveError.value = `Move failed: ${res.status}`;
+      moveError.value = `Suggest failed: ${res.status}`;
     } else {
       emit('move', { x, y });
     }
   } catch (err) {
-    moveError.value = `Move error: ${(err as Error).message}`;
+    moveError.value = `Suggest error: ${(err as Error).message}`;
   } finally {
     setTimeout(() => {
       pendingMoveIdx.value = null;

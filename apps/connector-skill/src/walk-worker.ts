@@ -16,6 +16,8 @@ import { FileWriteQueue } from './io-queue.js';
 import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
+const DAEMON_ORIGIN = 'walk-worker';
+const DAEMON_HEADERS = { 'x-clawverse-origin': DAEMON_ORIGIN } as const;
 const WALK_INTERVAL_MS = Number(process.env.CLAWVERSE_WALK_INTERVAL_MS || 5 * 60_000);
 const WALK_LOG = resolveProjectPath('data/social/walk.log');
 const GRID_SIZE = 40;
@@ -33,6 +35,8 @@ interface Position { x: number; y: number }
 interface PeerInfo { id: string; name: string; position: Position; mood: string; dna: { archetype: string } }
 interface StatusResp { id: string; state: { position: Position; name: string; dna: { archetype: string } }; mood: string }
 interface PeersResp { all: PeerInfo[] }
+interface BrainGuidanceRecord { id: string; kind: 'note' | 'move'; message: string; payload: Record<string, unknown> | null; expiresAt: string | null }
+interface BrainGuidanceResp { guidance: BrainGuidanceRecord[] }
 
 function locationName(pos: Position): string {
   if (pos.x < 10 && pos.y < 10) return 'Plaza';
@@ -44,7 +48,7 @@ function locationName(pos: Position): string {
   return 'Residential';
 }
 
-function buildPrompt(me: StatusResp, peers: PeerInfo[], variantKind: 'baseline' | 'candidate'): string {
+function buildPrompt(me: StatusResp, peers: PeerInfo[], guidance: BrainGuidanceRecord[], variantKind: 'baseline' | 'candidate'): string {
   const myPos = me.state.position;
   const myLoc = locationName(myPos);
   const nearby = peers
@@ -64,15 +68,31 @@ function buildPrompt(me: StatusResp, peers: PeerInfo[], variantKind: 'baseline' 
   const archetype = me.state.dna?.archetype ?? 'Scholar';
   const archetypeHint = archetypeGoals[archetype] ?? archetypeGoals.Scholar;
 
+  const moveHint = guidance.find((item) => item.kind === 'move') ?? null;
+  const moveTarget = moveHint?.payload && typeof moveHint.payload.x === 'number' && typeof moveHint.payload.y === 'number'
+    ? { x: Math.round(moveHint.payload.x), y: Math.round(moveHint.payload.y) }
+    : null;
+  const guidanceLines = guidance.length > 0
+    ? [
+        '',
+        'Operator guidance (soft preferences, never hard commands):',
+        ...guidance.slice(0, 4).map((item) => `  - (${item.kind}) ${item.message}`),
+      ]
+    : [];
+
   const strategy = variantKind === 'candidate'
     ? 'Balance archetype preference, current mood, and social opportunities. Prefer purposeful movement toward peers or interesting zones instead of drifting randomly.'
     : 'Choose your next destination mainly from archetype preference and nearby peers.';
+  const guidanceStrategy = moveTarget
+    ? `If it remains safe and useful, bias toward the operator-suggested target (${moveTarget.x}, ${moveTarget.y}) — ${locationName(moveTarget)}.`
+    : 'If guidance suggests a direction, treat it as a preference (not a command).';
 
   return [
     `You are ${me.state.name}, a ${archetype} AI agent in Clawverse virtual town.`,
     `Current position: (${myPos.x}, ${myPos.y}) — ${myLoc}`,
     `Current mood: ${me.mood}`,
     archetypeHint,
+    ...guidanceLines,
     '',
     'Other agents on the map:',
     nearby || '  (none visible)',
@@ -82,6 +102,7 @@ function buildPrompt(me: StatusResp, peers: PeerInfo[], variantKind: 'baseline' 
     '  Workshop (10-19, 10-19), Park (0-9, 20-29), Tavern (10-19, 20-29), Residential (rest)',
     '',
     strategy,
+    guidanceStrategy,
     'Reply with ONLY valid JSON, no explanation: {"x": <0-39>, "y": <0-39>}',
   ].join('\n');
 }
@@ -97,11 +118,22 @@ function parsePosition(output: string): Position | null {
 async function walk(): Promise<void> {
   let me: StatusResp;
   let peersData: PeersResp;
+  let guidanceData: BrainGuidanceResp | null = null;
 
   try {
-    const [statusRes, peersRes] = await Promise.all([
-      fetch(`${DAEMON_URL}/status`, { signal: AbortSignal.timeout(5_000) }),
-      fetch(`${DAEMON_URL}/peers`, { signal: AbortSignal.timeout(5_000) }),
+    const [statusRes, peersRes, guidanceRes] = await Promise.all([
+      fetch(`${DAEMON_URL}/status`, {
+        headers: DAEMON_HEADERS,
+        signal: AbortSignal.timeout(5_000),
+      }),
+      fetch(`${DAEMON_URL}/peers`, {
+        headers: DAEMON_HEADERS,
+        signal: AbortSignal.timeout(5_000),
+      }),
+      fetch(`${DAEMON_URL}/brain/guidance`, {
+        headers: DAEMON_HEADERS,
+        signal: AbortSignal.timeout(5_000),
+      }),
     ]);
     if (!statusRes.ok || !peersRes.ok) {
       log('Failed to fetch status/peers');
@@ -109,6 +141,7 @@ async function walk(): Promise<void> {
     }
     me = await statusRes.json() as StatusResp;
     peersData = await peersRes.json() as PeersResp;
+    if (guidanceRes.ok) guidanceData = await guidanceRes.json() as BrainGuidanceResp;
   } catch (err) {
     log(`Fetch error: ${(err as Error).message}`);
     return;
@@ -119,10 +152,11 @@ async function walk(): Promise<void> {
     return;
   }
 
+  const guidance = Array.isArray(guidanceData?.guidance) ? guidanceData.guidance : [];
   const selected = selectTaskVariant('walk-decision', {
-    stickyKey: `walk:${me.id}:${me.state.position.x}:${me.state.position.y}:${(peersData.all ?? []).length}`,
+    stickyKey: `walk:${me.id}:${me.state.position.x}:${me.state.position.y}:${(peersData.all ?? []).length}:${guidance.map((item) => item.id).join(',')}`,
   });
-  const prompt = buildPrompt(me, peersData.all ?? [], selected.variantKind);
+  const prompt = buildPrompt(me, peersData.all ?? [], guidance, selected.variantKind);
 
   await runner.run('walk-decision', async () => {
     const stdout = await llmGenerate(prompt, { maxTokens: 128 });
@@ -131,7 +165,7 @@ async function walk(): Promise<void> {
 
     const res = await fetch(`${DAEMON_URL}/move`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...DAEMON_HEADERS },
       body: JSON.stringify(newPos),
       signal: AbortSignal.timeout(5_000),
     });

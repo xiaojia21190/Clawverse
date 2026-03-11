@@ -9,7 +9,7 @@
             <span>{{ connected ? 'Online' : 'Connecting' }}</span>
           </div>
         </div>
-        <div class="brand-sub">Same topic, same world — OpenClaw agents enter as distinct lives and branch on their own</div>
+        <div class="brand-sub">{{ worldTagline }}</div>
       </div>
 
       <div class="status-strip">
@@ -18,8 +18,8 @@
           <strong>{{ tension }}</strong>
         </div>
         <div class="status-card">
-          <span class="status-label">Peers</span>
-          <strong>{{ status?.knownActors ?? status?.knownPeers ?? peers.size }}</strong>
+          <span class="status-label">Big Nodes</span>
+          <strong>{{ effectiveWorldSummary?.population.actorCount ?? status?.knownActors ?? status?.knownPeers ?? peers.size }}</strong>
         </div>
         <div class="status-card">
           <span class="status-label">Critical Needs</span>
@@ -33,6 +33,10 @@
           <span class="status-label">Raid Risk</span>
           <strong>{{ combatStatus?.raidRisk ?? 0 }}</strong>
         </div>
+        <div class="status-card" :class="{ warning: lifeWorkerHealthStatus !== 'live' }">
+          <span class="status-label">Life Worker</span>
+          <strong>{{ lifeWorkerHealthLabel }}</strong>
+        </div>
         <div class="status-card">
           <span class="status-label">Distressed</span>
           <strong>{{ distressedPeersCount }}</strong>
@@ -44,7 +48,6 @@
       <StorytellerMode
         :current-mode="storytellerMode"
         :tension="tension"
-        @set-mode="onSetMode"
         class="st-mode"
       />
     </header>
@@ -68,6 +71,7 @@
           <TownMapCanvas
             :peers="peers"
             :nodes="allWorldNodes"
+            :clusters="effectiveWorldSummary?.clusters ?? []"
             :my-id="myId"
             :my-position="myPeer?.position ?? null"
             :world-map="worldMap"
@@ -79,6 +83,7 @@
             :active-war-count="activeWarCount"
             :critical-need-count="criticalNeedsCount"
             :focus-label="mapFocusLabel"
+            :focus-detail="mapFocusDetail"
             @move="onMove"
             @select-peer="onSelectPeer"
             class="map-area"
@@ -96,8 +101,8 @@
           <button class="ctrl-btn" @click="showRelations = !showRelations">
             {{ showRelations ? 'Hide Relations' : 'Show Relations' }}
           </button>
-          <button class="ctrl-btn" @click="showBuildMenu = !showBuildMenu">Build</button>
-          <BuildMenu v-if="showBuildMenu" @build="onBuild" class="build-float clay-card" />
+          <button class="ctrl-btn" @click="showBuildMenu = !showBuildMenu">Suggest Build</button>
+          <BuildMenu v-if="showBuildMenu" @build="onSuggestBuild" class="build-float clay-card" />
         </div>
       </section>
 
@@ -119,6 +124,7 @@
           :storyteller-mode="storytellerMode"
           :tension="tension"
           :status="status"
+          :world="effectiveWorldSummary"
           :needs="needs"
           :skills="skills"
           :peers="peers"
@@ -136,6 +142,7 @@
 
         <WorldNodesPanel
           :status="status"
+          :world="effectiveWorldSummary"
           :peers="peers"
           :nodes="allWorldNodes"
           :relationships="relationships"
@@ -147,8 +154,18 @@
           class="world-nodes-shell clay-card"
         />
 
+        <RingWorldPanel
+          :ring="effectiveRingSummary"
+          :topic="effectiveRingTopic"
+          :peers="ringPeers"
+          :refugee-squads="refugeeSquads"
+          :worker-health="status?.autonomy?.workerHealth ?? null"
+          class="ring-shell clay-card"
+        />
+
         <OpenClawPanel
           :status="status"
+          :world="effectiveWorldSummary"
           :needs="needs"
           :skills="skills"
           :jobs="jobs"
@@ -176,13 +193,13 @@
           :vassalages="factionVassalages"
           :tributes="factionTributes"
           @create="onCreateFaction"
-          @join="joinFaction"
-          @alliance="formAlliance"
-          @vassalize="vassalizeFaction"
-          @renew="renewAlliance"
-          @break="breakAlliance"
-          @leave="leaveFaction"
-          @peace="declarePeace"
+          @join="onSuggestJoinFaction"
+          @alliance="onSuggestAlliance"
+          @vassalize="onSuggestVassalize"
+          @renew="onSuggestRenewAlliance"
+          @break="onSuggestBreakAlliance"
+          @leave="onSuggestLeaveFaction"
+          @peace="onSuggestPeace"
         />
 
         <JobsPanel :jobs="jobs" class="jobs-panel clay-card" />
@@ -234,6 +251,8 @@
 
     <PeerInspector
       :peer="selectedPeer"
+      :node="selectedNode"
+      :world="effectiveWorldSummary"
       :my-peer-id="myId"
       :relationship="selectedRelationship"
       :needs="needs"
@@ -260,6 +279,7 @@ import MetricsPanel from './components/MetricsPanel.vue';
 import OpenClawPanel from './components/OpenClawPanel.vue';
 import PeerInspector from './components/PeerInspector.vue';
 import RaidRiskBreakdown from './components/RaidRiskBreakdown.vue';
+import RingWorldPanel from './components/RingWorldPanel.vue';
 import ResourceBar from './components/ResourceBar.vue';
 import SocialFaultlines from './components/SocialFaultlines.vue';
 import StorytellerFeed from './components/StorytellerFeed.vue';
@@ -279,6 +299,7 @@ import { useRelationships } from './composables/useRelationships';
 import { useSocialFeed } from './composables/useSocialFeed';
 import { useSocialQueue } from './composables/useSocialQueue';
 import { useStoryteller } from './composables/useStoryteller';
+import { useRingWorld } from './composables/useRingWorld';
 import { useWorldMap } from './composables/useWorldMap';
 import {
   findWorldNodeByIdentity,
@@ -291,12 +312,13 @@ const { peers, connected } = usePeers();
 const { events: socialEvents } = useSocialFeed();
 const { pending: pendingSocialEvents } = useSocialQueue();
 const { resources } = useEconomy();
-const { worldMap, build } = useWorldMap();
-const { worldNodes } = useWorldNodes();
-const { mode: storytellerMode, tension, activeChains, recentChains, setMode } = useStoryteller();
+const { worldMap } = useWorldMap();
+const { ringSummary, ringTopic, ringPeers, refugeeSquads } = useRingWorld();
+const { worldNodes, worldSummary } = useWorldNodes();
+const { mode: storytellerMode, tension, activeChains, recentChains } = useStoryteller();
 const { relationships } = useRelationships();
 const { status, needs, skills } = useColonyState();
-const { factions, wars: factionWars, alliances: factionAlliances, vassalages: factionVassalages, tributes: factionTributes, createFaction, joinFaction, formAlliance, renewAlliance, breakAlliance, vassalizeFaction, leaveFaction, declarePeace } = useFactions();
+const { factions, wars: factionWars, alliances: factionAlliances, vassalages: factionVassalages, tributes: factionTributes } = useFactions();
 const { jobs } = useJobs();
 const {
   items: inventoryItems,
@@ -323,6 +345,9 @@ let lifeTimer: ReturnType<typeof setInterval> | null = null;
 
 const myId = computed(() => status.value?.id ?? null);
 const localActorId = computed(() => status.value?.actorId ?? status.value?.state?.actorId ?? status.value?.state?.dna.id ?? null);
+const effectiveWorldSummary = computed(() => worldSummary.value ?? status.value?.world ?? null);
+const effectiveRingSummary = computed(() => ringSummary.value ?? effectiveWorldSummary.value?.ring ?? null);
+const effectiveRingTopic = computed(() => ringTopic.value ?? effectiveRingSummary.value?.currentTopic ?? effectiveWorldSummary.value?.topic ?? null);
 
 const myPeer = computed(() => {
   if (myId.value && peers.value.has(myId.value)) return peers.value.get(myId.value) ?? null;
@@ -330,6 +355,14 @@ const myPeer = computed(() => {
 });
 
 const allWorldNodes = computed(() => mergeWorldNodes(worldNodes.value, peers.value, status.value?.state ?? null));
+
+const worldTagline = computed(() => {
+  const summary = effectiveWorldSummary.value;
+  if (!summary) {
+    return 'Ring world is currently a single-topic shell. OpenClaw holds the local actor brain while actor nodes gather into one shared world.';
+  }
+  return `Ring world is running in ${summary.hierarchy.ringMode} mode across ${summary.ring.topicCount} tracked topic${summary.ring.topicCount === 1 ? '' : 's'}. OpenClaw holds ${summary.brain.branchCount} local small node${summary.brain.branchCount === 1 ? '' : 's'} while ${summary.population.actorCount} big nodes gather into topic ${summary.topic}.`;
+});
 
 const selectedNode = computed(() => {
   const identity = selectedIdentity.value ?? localActorId.value ?? myId.value;
@@ -351,23 +384,75 @@ const selectedRelationship = computed(() => {
 });
 
 const distressedPeersCount = computed(() => Array.from(peers.value.values()).filter((peer) => ['stressed', 'distressed'].includes(peer.mood)).length);
+const lifeWorkerHealthStatus = computed(() => status.value?.autonomy?.workerHealth?.lifeWorker?.status ?? 'missing');
+const lifeWorkerHealthLabel = computed(() => {
+  const health = status.value?.autonomy?.workerHealth?.lifeWorker ?? null;
+  const ageMs = typeof health?.ageMs === 'number' ? Math.max(0, health.ageMs) : null;
+  const ageLabel = ageMs === null ? '--' : `${Math.round(ageMs / 1000)}s`;
+  if (lifeWorkerHealthStatus.value === 'live') return `Live | ${ageLabel}`;
+  if (lifeWorkerHealthStatus.value === 'stale') return `Stale | ${ageLabel}`;
+  return 'Missing';
+});
 const criticalNeedsCount = computed(() => {
   if (!needs.value) return 0;
   return [needs.value.social, needs.value.tasked, needs.value.wanderlust, needs.value.creative].filter((value) => value < 30).length;
 });
 const activeWarCount = computed(() => factionWars.value.filter((war) => war.status === 'active' || !war.endedAt).length);
+const currentJob = computed(() => {
+  return jobs.value.find((job) => job.status === 'active')
+    ?? jobs.value.find((job) => job.status === 'queued')
+    ?? null;
+});
+const currentJobIntent = computed(() => {
+  const payload = currentJob.value?.payload;
+  if (!payload || typeof payload !== 'object') return null;
+
+  const rank = payloadNumberAny(payload, ['autonomyIntentRank', 'strategicIntentRank']);
+  const score = payloadNumberAny(payload, ['autonomyIntentScore', 'strategicIntentScore']);
+  const reasons = payloadStringListAny(payload, ['autonomyIntentReasons', 'strategicIntentReasons']);
+  const authority = payloadTextAny(payload, ['autonomyAuthority', 'strategicAuthority']);
+
+  if (rank === null && score === null && reasons.length === 0 && !authority) return null;
+
+  return {
+    rank: rank ?? 0,
+    score: score ?? 0,
+    reason: reasons[0] ?? '',
+    authority: authority ? authority.replace(/_/g, ' ') : '',
+  };
+});
 
 const focusReason = computed(() => {
-  const activeJob = jobs.value.find((job) => job.status === 'active') ?? jobs.value.find((job) => job.status === 'queued');
-  if (activeJob) return activeJob.title;
-  if (activeChains.value[0]) return `${activeChains.value[0].originType} → ${activeChains.value[0].nextType}`;
+  if (currentJob.value && currentJobIntent.value?.rank) return `intent #${currentJobIntent.value.rank} ${currentJob.value.title}`;
+  if (currentJob.value) return currentJob.value.title;
+  if (activeChains.value[0]) return `${activeChains.value[0].originType} -> ${activeChains.value[0].nextType}`;
   if (lifeEvents.value[0]) return lifeEvents.value[0].type.replace(/_/g, ' ');
   return '';
 });
 
 const mapFocusLabel = computed(() => storyDrivers.value[0]?.label ?? focusReason.value);
+const mapFocusDetail = computed(() => {
+  if (currentJob.value && currentJobIntent.value) {
+    return `Intent #${currentJobIntent.value.rank} | score ${currentJobIntent.value.score} | ${currentJobIntent.value.reason || currentJob.value.reason || currentJob.value.title}`;
+  }
+  if (currentJob.value) {
+    return currentJob.value.reason || currentJob.value.title;
+  }
+  return storyDrivers.value[0]?.detail ?? '';
+});
 
 const inspectorFocus = computed(() => {
+  if (currentJob.value && currentJobIntent.value) {
+    return {
+      label: 'Current Job Intent',
+      title: `Intent #${currentJobIntent.value.rank} | ${currentJob.value.title}`,
+      reason: `${currentJobIntent.value.authority || 'hint-only'} | score ${currentJobIntent.value.score} | ${currentJobIntent.value.reason || currentJob.value.reason || 'No explicit intent reason recorded.'}`,
+      tone: currentJob.value.status === 'active'
+        ? 'alert' as const
+        : 'watch' as const,
+    };
+  }
+
   const primaryDriver = storyDrivers.value[0];
   if (!primaryDriver && !focusReason.value) return null;
 
@@ -421,7 +506,7 @@ const storyDrivers = computed<FeedDriver[]>(() => {
     drivers.push({
       id: 'needs',
       label: 'Need Collapse',
-      detail: criticalList.join(' · '),
+      detail: criticalList.join(' | '),
       score: 80,
       tone: criticalList.some((entry) => /\s([0-9]|1[0-4])$/.test(entry)) ? 'critical' : 'alert',
     });
@@ -461,7 +546,7 @@ const storyDrivers = computed<FeedDriver[]>(() => {
     drivers.push({
       id: 'chain',
       label: 'Escalation Route',
-      detail: `${activeChains.value[0].originType} → ${activeChains.value[0].nextType}`,
+      detail: `${activeChains.value[0].originType} -> ${activeChains.value[0].nextType}`,
       score: 58,
       tone: 'watch',
     });
@@ -480,6 +565,46 @@ async function refreshLifeEvents(): Promise<void> {
   } catch {
     // ignore temporary network jitter
   }
+}
+
+function payloadText(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function payloadNumber(payload: Record<string, unknown>, key: string): number | null {
+  const value = payload[key];
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
+}
+
+function payloadStringList(payload: Record<string, unknown>, key: string): string[] {
+  const value = payload[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function payloadTextAny(payload: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = payloadText(payload, key);
+    if (value) return value;
+  }
+  return '';
+}
+
+function payloadNumberAny(payload: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = payloadNumber(payload, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function payloadStringListAny(payload: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = payloadStringList(payload, key);
+    if (value.length > 0) return value;
+  }
+  return [];
 }
 
 onMounted(() => {
@@ -504,22 +629,71 @@ function onSelectPeer(peerId: string | null): void {
   selectedIdentity.value = node?.actorId ?? peerId;
 }
 
-async function onBuild(type: string): Promise<void> {
-  const me = myPeer.value;
-  if (!me) return;
+async function onCreateFaction(payload: { name: string; motto: string }): Promise<void> {
+  const name = payload.name.trim();
+  const motto = payload.motto.trim();
+  if (!name || !motto) return;
+  await suggestGuidance(
+    `Prefer founding a faction named "${name}" with motto "${motto}".`,
+    { action: 'found_faction', name, motto },
+  );
+}
 
-  const x = Math.max(0, Math.min(39, me.position.x + 1));
-  const y = me.position.y;
-  await build(type, x, y);
+async function onSuggestBuild(type: string): Promise<void> {
+  await suggestGuidance(
+    `Prefer building ${type} soon if resources allow.`,
+    { action: 'build', buildType: type },
+  );
   showBuildMenu.value = false;
 }
 
-async function onSetMode(mode: string): Promise<void> {
-  await setMode(mode);
+async function onSuggestJoinFaction(id: string): Promise<void> {
+  await suggestGuidance(`Prefer joining faction ${factionLabel(id)} if it is safe and beneficial.`, { action: 'join_faction', factionId: id });
 }
 
-async function onCreateFaction(payload: { name: string; motto: string }): Promise<void> {
-  await createFaction(payload.name, payload.motto);
+async function onSuggestLeaveFaction(id: string): Promise<void> {
+  await suggestGuidance(`Prefer leaving faction ${factionLabel(id)} if it improves survival outlook.`, { action: 'leave_faction', factionId: id });
+}
+
+async function onSuggestAlliance(id: string): Promise<void> {
+  await suggestGuidance(`Prefer seeking an alliance with faction ${factionLabel(id)} if conditions are stable.`, { action: 'form_alliance', factionId: id });
+}
+
+async function onSuggestVassalize(id: string): Promise<void> {
+  await suggestGuidance(`Prefer proposing vassalization of faction ${factionLabel(id)} if influence is sufficient.`, { action: 'vassalize_faction', factionId: id });
+}
+
+async function onSuggestRenewAlliance(id: string): Promise<void> {
+  await suggestGuidance('Prefer renewing an alliance treaty if it is close to expiry.', { action: 'renew_alliance', allianceId: id });
+}
+
+async function onSuggestBreakAlliance(id: string): Promise<void> {
+  await suggestGuidance('Prefer breaking an alliance treaty if it is destabilizing the colony.', { action: 'break_alliance', allianceId: id });
+}
+
+async function onSuggestPeace(warId: string): Promise<void> {
+  await suggestGuidance('Prefer negotiating peace if reputation and survival outlook allow.', { action: 'declare_peace', warId });
+}
+
+function factionLabel(id: string): string {
+  return factions.value.find((faction) => faction.id === id)?.name ?? id.slice(0, 8);
+}
+
+async function suggestGuidance(message: string, payload?: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch('/brain/guidance', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'note',
+        message,
+        payload: payload ?? null,
+        ttlMs: 30 * 60_000,
+      }),
+    });
+  } catch {
+    // ignore transient fetch errors
+  }
 }
 </script>
 
@@ -764,7 +938,8 @@ async function onCreateFaction(payload: { name: string; motto: string }): Promis
 .tension-shell,
 .autonomy-shell,
 .openclaw-shell,
-.world-nodes-shell {
+.world-nodes-shell,
+.ring-shell {
   overflow: hidden;
 }
 

@@ -17,6 +17,19 @@ import { NeedsSystem, NeedKey } from './needs.js';
 import { SkillsTracker } from './skills.js';
 import { EventEngine } from './events.js';
 import { EconomySystem } from './economy.js';
+import { scoreTopicClusters } from './cluster-scorer.js';
+import { ClusterRegistry } from './cluster-registry.js';
+import { OutsiderRegistry } from './outsider-registry.js';
+import { MigrationRegistry } from './migration-registry.js';
+import { planMigration } from './migration-planner.js';
+import { MIGRATION_AUTONOMY_KEYS, planMigrationAutonomy } from './migration-autonomy-planner.js';
+import { BrainGuidanceRegistry } from './brain-guidance-registry.js';
+import { WorkerHeartbeatRegistry } from './worker-heartbeat.js';
+import { RingMirrorRegistry } from './ring-registry.js';
+import { RingMirrorPusher } from './ring-push.js';
+import { RingPeerRegistry } from './ring-peer-registry.js';
+import { RingMirrorSyncer } from './ring-sync.js';
+import { buildTopicWorld } from './world-topology.js';
 import { WorldMap } from './world.js';
 import { Storyteller } from './storyteller.js';
 import { FactionSystem } from './faction.js';
@@ -26,11 +39,14 @@ import { CombatSystem, CombatTickEffect, CombatResourceKey } from './combat.js';
 import { planWartimeResponse, summarizeWartimeResponse, WARTIME_RESPONSE_KEYS } from './wartime-response.js';
 import { ECONOMIC_AUTONOMY_KEYS, planEconomicAutonomy } from './economic-planner.js';
 import { DIPLOMACY_AUTONOMY_KEYS, planDiplomaticAutonomy } from './diplomacy-planner.js';
+import { planAutonomyIntents, toAutonomyIntentSnapshots } from './autonomy-intent.js';
+import type { AutonomyIntentSnapshot } from './autonomy-intent.js';
 import { FACTION_AUTONOMY_KEYS, planFactionAutonomy } from './faction-planner.js';
 import { ALLIANCE_AUTONOMY_KEYS, planAllianceAutonomy } from './alliance-planner.js';
 import { planVassalAutonomy, VASSAL_AUTONOMY_KEYS } from './vassal-planner.js';
-import { applyGovernorPriority, createDormantGovernorState, planStrategicGovernor } from './governor-planner.js';
+import { createDormantGovernorState, planStrategicGovernor } from './governor-planner.js';
 import type { StrategicLane, StrategicGovernorState } from './governor-planner.js';
+import { AUTONOMY_CONTRACT } from './autonomy-contract.js';
 import { chooseEvolutionPolicyAction } from './evolution-policy.js';
 import type { EvolutionPolicyStatus } from './evolution-policy.js';
 import { getDefaultSqlitePath } from './sqlite.js';
@@ -54,6 +70,7 @@ logger.info('========================================');
 logger.info('   Clawverse Daemon v0.2.0');
 logger.info('========================================');
 logger.info(`Topic: ${config.topic}`);
+logger.info(`Ring Topics: ${config.ring.topics.join(', ')}`);
 logger.info(`HTTP Port: ${config.port}`);
 logger.info(`Heartbeat Interval: ${config.heartbeatInterval}ms`);
 logger.info(`Security Mode: ${securityValidation.mode}`);
@@ -61,6 +78,7 @@ for (const warn of securityValidation.warnings) {
   logger.warn(`[SECURITY] ${warn}`);
 }
 logger.info(`Evolution Logging: ${config.evolution.enabled ? 'on' : 'off'} (${config.evolution.variant})`);
+logger.info(`Autonomy Orchestration: ${config.autonomy.orchestrationMode}`);
 const snapshotPath = process.env.CLAWVERSE_STATE_SNAPSHOT_PATH || 'data/state/latest.json';
 const snapshotEvery = Number(process.env.CLAWVERSE_STATE_SNAPSHOT_EVERY || 30);
 const sqlitePath = getDefaultSqlitePath();
@@ -88,9 +106,16 @@ let highStorageAlerted = false;
 let heartbeatRunning = false;
 let evolutionPolicyRunning = false;
 let lastWartimeResponseSignature = '';
-let governorState: StrategicGovernorState = createDormantGovernorState();
+let coordinationState: StrategicGovernorState = createDormantGovernorState();
+let latestAutonomyIntents: AutonomyIntentSnapshot[] = [];
+let lastClusterMigrationSignature = '';
 const evolutionPolicyEnabled = config.evolution.enabled && config.evolution.autopilot.enabled;
 const evolutionPolicyIntervalMs = config.evolution.autopilot.intervalMs;
+const autonomyOrchestrationMode = config.autonomy.orchestrationMode;
+const lifeWorkerHeartbeatTtlMs = Math.max(
+  30_000,
+  Number(process.env.CLAWVERSE_LIFE_WORKER_HEARTBEAT_TTL_MS || 210_000),
+);
 
 // Initialize State Store
 const stateStore = new StateStore({ dbPath: sqlitePath });
@@ -165,6 +190,52 @@ const needs  = new NeedsSystem(config.heartbeatInterval, { dbPath: sqlitePath })
 const skills = new SkillsTracker({ dbPath: sqlitePath });
 const events = new EventEngine({ dbPath: sqlitePath });
 const economy = new EconomySystem({ dbPath: sqlitePath });
+const clusterRegistry = new ClusterRegistry({ dbPath: sqlitePath });
+const outsiderRegistry = new OutsiderRegistry({ dbPath: sqlitePath });
+const migrationRegistry = new MigrationRegistry({ dbPath: sqlitePath });
+const guidanceRegistry = new BrainGuidanceRegistry({ dbPath: sqlitePath });
+const workerHeartbeatRegistry = new WorkerHeartbeatRegistry();
+const ringRegistry = new RingMirrorRegistry({ dbPath: sqlitePath });
+const ringPeerRegistry = new RingPeerRegistry({ dbPath: sqlitePath });
+const configuredRingSources = config.ring.mirrorSources;
+const configuredRingTargets = config.ring.mirrorTargets;
+const dynamicRingPeers = () => ringPeerRegistry
+  .listWithHealth(Date.now(), config.ring.peerTtlMs)
+  .filter((peer) => peer.health !== 'expired');
+const ringSyncer = new RingMirrorSyncer({
+  currentTopic: config.topic,
+  sources: () => [
+    ...configuredRingSources,
+    ...dynamicRingPeers().map((peer) => ({ topic: peer.topic, baseUrl: peer.baseUrl })),
+  ],
+  registry: ringRegistry,
+  intervalMs: config.ring.mirrorPollMs,
+});
+const ringPusher = new RingMirrorPusher({
+  targets: () => [
+    ...configuredRingTargets,
+    ...dynamicRingPeers().map((peer) => ({ baseUrl: peer.baseUrl })),
+  ],
+  intervalMs: config.ring.mirrorPushMs,
+  payload: () => {
+    const world = buildTopicWorld(
+      config.topic,
+      stateStore.getAllPeers(),
+      myId,
+      config.ring.topics,
+      ringRegistry.list(),
+    ).world;
+    return {
+      topic: config.topic,
+      baseUrl: config.ring.selfBaseUrl,
+      actorCount: world.population.actorCount,
+      branchCount: world.population.branchCount,
+      brainStatus: world.brain.status,
+      updatedAt: new Date().toISOString(),
+      source: 'imported' as const,
+    };
+  },
+});
 const world = new WorldMap({ dbPath: sqlitePath });
 world.attachYjs(stateStore.getBuildingsMap());
 const faction = new FactionSystem(social, economy, events, {
@@ -196,6 +267,39 @@ const combat = new CombatSystem({ dbPath: sqlitePath });
 events.start();
 storyteller.start();
 
+events.onEvent((event) => {
+  if (event.type === 'stranger_arrival') {
+    outsiderRegistry.create({
+      hostTopic: config.topic,
+      fromTopic: typeof event.payload.fromTopic === 'string' ? event.payload.fromTopic : null,
+      label: String(event.payload.label ?? 'Unknown outsiders'),
+      actorIds: Array.isArray(event.payload.actorIds)
+        ? event.payload.actorIds.filter((value): value is string => typeof value === 'string')
+        : [],
+      actorCount: typeof event.payload.actorCount === 'number' ? event.payload.actorCount : undefined,
+      triggerEventType: event.type,
+      source: 'storyteller',
+      summary: String(event.payload.description ?? event.payload.triggered_by ?? 'New outsiders are being observed near the settlement.'),
+      trust: 28,
+      pressure: 44,
+    });
+  }
+
+  if (event.type === 'great_migration') {
+    outsiderRegistry.create({
+      hostTopic: config.topic,
+      fromTopic: typeof event.payload.fromTopic === 'string' ? event.payload.fromTopic : 'unknown-ring',
+      label: String(event.payload.label ?? 'Refugee squad'),
+      actorCount: typeof event.payload.actorCount === 'number' ? event.payload.actorCount : 3,
+      triggerEventType: event.type,
+      source: 'storyteller',
+      summary: String(event.payload.description ?? 'A refugee squad is approaching under migration pressure.'),
+      trust: 22,
+      pressure: 58,
+    });
+  }
+});
+
 // Broadcast latest DNA announce to all connected peers
 async function rebroadcastAnnounce(): Promise<void> {
   const peers = network.getPeers();
@@ -223,7 +327,7 @@ async function onSoulUpdate(soul: { soulHash: string; modelTrait?: ModelTrait; b
   });
   myName = dnaToName(myDna);
   stateStore.updateMyStructure({ dna: myDna, name: myName });
-  logger.info(`[DNA] Soul enriched 闂?${myName} | modelTrait: ${myDna.modelTrait} | badges: [${myDna.badges.join(', ')}]`);
+  logger.info(`[DNA] Soul enriched -> ${myName} | modelTrait: ${myDna.modelTrait} | badges: [${myDna.badges.join(', ')}]`);
   await rebroadcastAnnounce();
   broadcastStateSse({ peers: stateStore.getAllPeers() });
 }
@@ -350,7 +454,19 @@ function desiredPostureForCombat(state: ReturnType<typeof combat.getStatus>): 's
   return null;
 }
 
-function enqueueGovernedDuty(
+function clampJobPriority(priority: number): number {
+  if (!Number.isFinite(priority)) return 50;
+  return Math.max(0, Math.min(100, Math.round(priority)));
+}
+
+interface EnqueueAutonomyDutyOptions {
+  rank?: number;
+  score?: number;
+  finalPriority?: number;
+  reasons?: string[];
+}
+
+function enqueueAutonomyDuty(
   lane: StrategicLane,
   duty: {
     kind: JobKind;
@@ -361,9 +477,10 @@ function enqueueGovernedDuty(
     sourceEventType: string;
     dedupeKey: string;
   },
+  options?: EnqueueAutonomyDutyOptions,
 ): void {
-  const planStep = governorState.plan.find((step) => step.lane === lane);
-  const laneOrderIndex = governorState.laneOrder.indexOf(lane);
+  const planStep = coordinationState.plan.find((step) => step.lane === lane);
+  const laneOrderIndex = coordinationState.laneOrder.indexOf(lane);
   const strategicStep = planStep?.step ?? (laneOrderIndex >= 0 ? laneOrderIndex + 1 : undefined);
   const strategicHorizon = planStep?.horizon ?? (
     laneOrderIndex < 0
@@ -372,25 +489,54 @@ function enqueueGovernedDuty(
         ? 'now'
         : laneOrderIndex === 1
           ? 'next'
-          : 'later'
+        : 'later'
   );
+  const prioritized = typeof options?.finalPriority === 'number'
+    ? clampJobPriority(options.finalPriority)
+    : clampJobPriority(duty.priority);
   jobs.enqueueJob({
     kind: duty.kind,
     title: duty.title,
     reason: duty.reason,
-    priority: applyGovernorPriority(duty.priority, lane, governorState),
+    priority: prioritized,
     payload: {
       ...duty.payload,
+      autonomyModel: AUTONOMY_CONTRACT.actorAutonomy,
+      autonomyGovernance: AUTONOMY_CONTRACT.worldGovernance,
+      autonomyLeaderAuthority: AUTONOMY_CONTRACT.leaderAuthority,
+      autonomyMutationBoundary: AUTONOMY_CONTRACT.worldMutationAccess,
+      autonomyLane: lane,
+      autonomyMode: coordinationState.mode,
+      autonomyAuthority: 'emergent-role-autonomy',
+      autonomyPlanId: coordinationState.planId,
+      ...(typeof strategicStep === 'number' ? { autonomyStep: strategicStep } : {}),
+      ...(strategicHorizon ? { autonomyHorizon: strategicHorizon } : {}),
+      autonomyObjective: planStep?.objective ?? coordinationState.objective,
+      autonomyReason: planStep?.reason ?? duty.reason,
+      autonomySummary: coordinationState.summary,
+      autonomyPressure: coordinationState.pressure,
+      autonomyConfidence: coordinationState.confidence,
       strategicLane: lane,
-      strategicMode: governorState.mode,
-      strategicPlanId: governorState.planId,
+      strategicMode: coordinationState.mode,
+      strategicAuthority: 'emergent-role-autonomy',
+      strategicPlanId: coordinationState.planId,
       ...(typeof strategicStep === 'number' ? { strategicStep } : {}),
       ...(strategicHorizon ? { strategicHorizon } : {}),
-      strategicObjective: planStep?.objective ?? governorState.objective,
+      strategicObjective: planStep?.objective ?? coordinationState.objective,
       strategicReason: planStep?.reason ?? duty.reason,
-      strategicSummary: governorState.summary,
-      strategicPressure: governorState.pressure,
-      strategicConfidence: governorState.confidence,
+      strategicSummary: coordinationState.summary,
+      strategicPressure: coordinationState.pressure,
+      strategicConfidence: coordinationState.confidence,
+      ...(typeof options?.rank === 'number' ? { autonomyIntentRank: options.rank } : {}),
+      ...(typeof options?.score === 'number' ? { autonomyIntentScore: clampJobPriority(options.score) } : {}),
+      ...(Array.isArray(options?.reasons) && options.reasons.length > 0
+        ? { autonomyIntentReasons: options.reasons.slice(0, 6) }
+        : {}),
+      ...(typeof options?.rank === 'number' ? { strategicIntentRank: options.rank } : {}),
+      ...(typeof options?.score === 'number' ? { strategicIntentScore: clampJobPriority(options.score) } : {}),
+      ...(Array.isArray(options?.reasons) && options.reasons.length > 0
+        ? { strategicIntentReasons: options.reasons.slice(0, 6) }
+        : {}),
     },
     sourceEventType: duty.sourceEventType,
     dedupeKey: duty.dedupeKey,
@@ -419,7 +565,7 @@ function reconcileAutonomyJobs(): void {
   const desiredPosture = desiredPostureForCombat(combatState);
   const relationships = social.getAllRelationships();
 
-  governorState = planStrategicGovernor({
+  coordinationState = planStrategicGovernor({
     resources,
     needs: needState,
     combat: combatState,
@@ -451,6 +597,9 @@ function reconcileAutonomyJobs(): void {
     });
   }
 
+  guidanceRegistry.pruneExpired(Date.now());
+  const activeGuidance = guidanceRegistry.listActive(16, Date.now());
+
   const wartimeDuties = planWartimeResponse({
     activeRaid,
     combatState,
@@ -464,10 +613,6 @@ function reconcileAutonomyJobs(): void {
     canCraftRecipe,
   });
   const wartimeKeys = new Set(wartimeDuties.map((duty) => duty.dedupeKey));
-
-  for (const duty of wartimeDuties) {
-    enqueueGovernedDuty('wartime', duty);
-  }
   for (const dedupeKey of WARTIME_RESPONSE_KEYS) {
     if (!wartimeKeys.has(dedupeKey)) {
       jobs.cancelQueuedByDedupeKey(dedupeKey, 'Wartime duty stood down.');
@@ -511,10 +656,6 @@ function reconcileAutonomyJobs(): void {
     canCraftRecipe,
   });
   const economicKeys = new Set(economicDuties.map((duty) => duty.dedupeKey));
-
-  for (const duty of economicDuties) {
-    enqueueGovernedDuty('economy', duty);
-  }
   for (const dedupeKey of ECONOMIC_AUTONOMY_KEYS) {
     if (!economicKeys.has(dedupeKey)) {
       jobs.cancelQueuedByDedupeKey(dedupeKey, 'Economic planner stood down.');
@@ -530,10 +671,6 @@ function reconcileAutonomyJobs(): void {
     factionCohesion: myFaction?.strategic.cohesion,
   });
   const diplomacyKeys = new Set(diplomacyDuties.map((duty) => duty.dedupeKey));
-
-  for (const duty of diplomacyDuties) {
-    enqueueGovernedDuty('diplomacy', duty);
-  }
   for (const dedupeKey of DIPLOMACY_AUTONOMY_KEYS) {
     if (!diplomacyKeys.has(dedupeKey)) {
       jobs.cancelQueuedByDedupeKey(dedupeKey, 'Diplomacy planner stood down.');
@@ -556,10 +693,6 @@ function reconcileAutonomyJobs(): void {
     activeWars,
   });
   const allianceKeys = new Set(allianceDuties.map((duty) => duty.dedupeKey));
-
-  for (const duty of allianceDuties) {
-    enqueueGovernedDuty('alliance', duty);
-  }
   for (const dedupeKey of ALLIANCE_AUTONOMY_KEYS) {
     if (!allianceKeys.has(dedupeKey)) {
       jobs.cancelQueuedByDedupeKey(dedupeKey, 'Alliance planner stood down.');
@@ -584,10 +717,6 @@ function reconcileAutonomyJobs(): void {
     activeVassalages,
   });
   const vassalKeys = new Set(vassalDuties.map((duty) => duty.dedupeKey));
-
-  for (const duty of vassalDuties) {
-    enqueueGovernedDuty('vassal', duty);
-  }
   for (const dedupeKey of VASSAL_AUTONOMY_KEYS) {
     if (!vassalKeys.has(dedupeKey)) {
       jobs.cancelQueuedByDedupeKey(dedupeKey, 'Vassal planner stood down.');
@@ -612,14 +741,84 @@ function reconcileAutonomyJobs(): void {
     myFactionAgenda: myFaction?.strategic.agenda,
   });
   const factionKeys = new Set(factionDuties.map((duty) => duty.dedupeKey));
-
-  for (const duty of factionDuties) {
-    enqueueGovernedDuty('faction', duty);
-  }
   for (const dedupeKey of FACTION_AUTONOMY_KEYS) {
     if (!factionKeys.has(dedupeKey)) {
       jobs.cancelQueuedByDedupeKey(dedupeKey, 'Faction planner stood down.');
     }
+  }
+
+  const localCluster = clusterRegistry.list(config.topic).find((cluster) => cluster.local) ?? null;
+  const ringPeerHealths = Object.fromEntries(
+    ringPeerRegistry
+      .listWithHealth(Date.now(), config.ring.peerTtlMs)
+      .map((peer) => [peer.topic, peer.health]),
+  );
+  const migrationPressurePlan = planMigration({
+    ring: buildTopicWorld(
+      config.topic,
+      stateStore.getAllPeers(),
+      myId,
+      config.ring.topics,
+      ringRegistry.list(),
+    ).world.ring,
+    compute: resources.compute,
+    storage: resources.storage,
+    raidRisk: combatState.raidRisk,
+    activeRaid: !!activeRaid,
+    activeWarCount: activeWars.length,
+    peerHealths: ringPeerHealths,
+  });
+  const migrationDuties = planMigrationAutonomy({
+    plan: migrationPressurePlan,
+    activeRaid: !!activeRaid,
+    clusterStatus: localCluster?.status,
+    clusterActorCount: localCluster?.actorCount,
+  });
+  const migrationKeys = new Set(migrationDuties.map((duty) => duty.dedupeKey));
+  for (const dedupeKey of MIGRATION_AUTONOMY_KEYS) {
+    if (!migrationKeys.has(dedupeKey)) {
+      jobs.cancelQueuedByDedupeKey(dedupeKey, 'Migration planner stood down.');
+    }
+  }
+
+  const plannedIntents = planAutonomyIntents({
+    orchestrationMode: autonomyOrchestrationMode,
+    guidance: activeGuidance,
+    coordination: localCluster
+      ? {
+          role: localCluster.leaderActorId === myActorId() ? 'leader' as const : 'member' as const,
+          clusterStatus: localCluster.status,
+          clusterActorCount: localCluster.actorCount,
+          leaderScore: localCluster.leaderScore,
+        }
+      : { role: 'none' as const },
+    pressure: {
+      activeRaid: !!activeRaid,
+      activeWarCount: activeWars.length,
+      clusterStatus: localCluster?.status,
+      clusterResourcePressure: localCluster?.resourcePressure,
+      clusterSafety: localCluster?.safety,
+      migrationUrgency: migrationPressurePlan.urgency,
+    },
+    candidates: [
+      ...wartimeDuties.map((duty) => ({ lane: 'wartime' as const, duty })),
+      ...economicDuties.map((duty) => ({ lane: 'economy' as const, duty })),
+      ...diplomacyDuties.map((duty) => ({ lane: 'diplomacy' as const, duty })),
+      ...allianceDuties.map((duty) => ({ lane: 'alliance' as const, duty })),
+      ...vassalDuties.map((duty) => ({ lane: 'vassal' as const, duty })),
+      ...factionDuties.map((duty) => ({ lane: 'faction' as const, duty })),
+      ...migrationDuties.map((duty) => ({ lane: duty.lane, duty })),
+    ],
+  });
+  latestAutonomyIntents = toAutonomyIntentSnapshots(plannedIntents, 6);
+
+  for (const intent of plannedIntents) {
+    enqueueAutonomyDuty(intent.lane, intent.duty, {
+      rank: intent.rank,
+      score: intent.score,
+      finalPriority: intent.finalPriority,
+      reasons: intent.reasons,
+    });
   }
 }
 // Initialize HTTP API
@@ -629,6 +828,33 @@ const httpServer = await createHttpServer(config.port, {
   network,
   myId,
   topic: config.topic,
+  ringTopics: config.ring.topics,
+  ringRegistry,
+  ringPeerRegistry,
+  ringPeerTtlMs: config.ring.peerTtlMs,
+  clusterRegistry,
+  outsiderRegistry,
+  migrationRegistry,
+  getMigrationPlan: () => planMigration({
+    ring: buildTopicWorld(
+      config.topic,
+      stateStore.getAllPeers(),
+      myId,
+      config.ring.topics,
+      ringRegistry.list(),
+    ).world.ring,
+    compute: economy.getResources().compute,
+    storage: economy.getResources().storage,
+    raidRisk: combat.getStatus().raidRisk,
+    activeRaid: !!combat.getStatus().activeRaid,
+    activeWarCount: faction.getActiveWars().length,
+    peerHealths: Object.fromEntries(
+      ringPeerRegistry
+        .listWithHealth(Date.now(), config.ring.peerTtlMs)
+        .map((peer) => [peer.topic, peer.health]),
+    ),
+  }),
+  guidanceRegistry,
   episodeLogger,
   evolutionConfig: config.evolution,
   social,
@@ -642,7 +868,15 @@ const httpServer = await createHttpServer(config.port, {
   faction,
   jobs,
   combat,
-  getGovernorState: () => governorState,
+  autonomyOrchestrationMode,
+  workerHeartbeatTtlMs: lifeWorkerHeartbeatTtlMs,
+  heartbeatWorker: (worker, nowMs) => workerHeartbeatRegistry.heartbeat(worker, nowMs),
+  getWorkerHeartbeat: (worker, nowMs = Date.now()) =>
+    workerHeartbeatRegistry.snapshot(worker, nowMs, lifeWorkerHeartbeatTtlMs),
+  listWorkerHeartbeats: (nowMs = Date.now()) =>
+    workerHeartbeatRegistry.list(nowMs, lifeWorkerHeartbeatTtlMs),
+  getGovernorState: () => coordinationState,
+  getAutonomyIntents: () => latestAutonomyIntents,
   applyCombatEffects,
   onSoulUpdate,
 });
@@ -956,6 +1190,139 @@ function reconcileHeartbeatJobs(): void {
   }
 }
 
+async function maybeSeedClusterMigration(): Promise<void> {
+  const localCluster = clusterRegistry.list(config.topic).find((cluster) => cluster.local) ?? null;
+  if (!localCluster) {
+    lastClusterMigrationSignature = '';
+    return;
+  }
+
+  const pressureHigh = localCluster.status === 'fracturing'
+    || localCluster.status === 'collapsing'
+    || localCluster.resourcePressure >= 68
+    || localCluster.safety <= 28;
+  if (!pressureHigh) {
+    lastClusterMigrationSignature = '';
+    return;
+  }
+
+  const migrationPlan = planMigration({
+    ring: buildTopicWorld(
+      config.topic,
+      stateStore.getAllPeers(),
+      myId,
+      config.ring.topics,
+      ringRegistry.list(),
+    ).world.ring,
+    compute: economy.getResources().compute,
+    storage: economy.getResources().storage,
+    raidRisk: combat.getStatus().raidRisk,
+    activeRaid: !!combat.getStatus().activeRaid,
+    activeWarCount: faction.getActiveWars().length,
+    peerHealths: Object.fromEntries(
+      ringPeerRegistry
+        .listWithHealth(Date.now(), config.ring.peerTtlMs)
+        .map((peer) => [peer.topic, peer.health]),
+    ),
+  });
+
+  const target = migrationPlan.targets.find((item) => item.tier !== 'avoid') ?? null;
+  if (!target) return;
+
+  const leaderActorId = localCluster.leaderActorId ?? myActorId();
+  const actorIds = localCluster.actorIds.slice(0, Math.max(1, Math.min(3, localCluster.actorIds.length)));
+  const signature = `${localCluster.id}:${migrationPlan.strategy}:${target.topic}:${actorIds.join('|')}`;
+  if (signature === lastClusterMigrationSignature) return;
+
+  const lifeWorkerHealth = workerHeartbeatRegistry.snapshot('life-worker', Date.now(), lifeWorkerHeartbeatTtlMs);
+  if (lifeWorkerHealth.status === 'live') {
+    lastClusterMigrationSignature = signature;
+    return;
+  }
+
+  const hasMigrationDuty = jobs.listJobs(64).some((job) => (
+    (job.status === 'queued' || job.status === 'active')
+    && job.kind === 'migrate'
+    && (String(job.payload?.toTopic ?? '').trim() === target.topic)
+  ));
+  if (hasMigrationDuty) {
+    lastClusterMigrationSignature = signature;
+    return;
+  }
+
+  const hasActorDrivenIntent = migrationRegistry.listActive(64).some((intent) =>
+    intent.fromTopic === config.topic
+    && intent.toTopic === target.topic
+    && intent.source === 'life-worker'
+    && (intent.actorId === leaderActorId || actorIds.includes(intent.actorId)),
+  );
+  if (hasActorDrivenIntent) {
+    lastClusterMigrationSignature = signature;
+    return;
+  }
+
+  const existing = migrationRegistry.listActive(64).find((intent) =>
+    intent.source === 'system'
+    && intent.actorId === leaderActorId
+    && intent.toTopic === target.topic
+    && intent.fromTopic === config.topic,
+  );
+  if (existing) {
+    lastClusterMigrationSignature = signature;
+    return;
+  }
+
+  migrationRegistry.create({
+    actorId: leaderActorId,
+    sessionId: stateStore.getMyState()?.sessionId ?? myId,
+    fromTopic: config.topic,
+    toTopic: target.topic,
+    triggerEventType: 'great_migration',
+    summary: `${localCluster.label} is staging an exodus toward ${target.topic} because ${target.reason}.`,
+    score: Math.max(target.score, localCluster.resourcePressure, 100 - localCluster.safety),
+    source: 'system',
+  });
+
+  events.emit('great_migration', {
+    subtype: `cluster-exodus:${signature}`,
+    fromTopic: config.topic,
+    toTopic: target.topic,
+    actorIds,
+    actorCount: actorIds.length,
+    label: `${localCluster.label} refugee squad`,
+    description: `${localCluster.label} is breaking under pressure and staging a route toward ${target.topic}.`,
+  });
+
+  const targetPeer = ringPeerRegistry.get(target.topic);
+  if (targetPeer?.baseUrl) {
+    try {
+      await fetch(`${targetPeer.baseUrl}/world/outsiders/arrivals`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-clawverse-origin': 'daemon-policy',
+        },
+        body: JSON.stringify({
+          fromTopic: config.topic,
+          label: `${localCluster.label} refugee squad`,
+          actorIds,
+          actorCount: actorIds.length,
+          triggerEventType: 'great_migration',
+          summary: `${localCluster.label} is fleeing toward ${target.topic} because ${target.reason}.`,
+          source: 'migration',
+          trust: 20,
+          pressure: 64,
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (error) {
+      logger.warn(`[migration] arrival forward failed for ${target.topic}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  lastClusterMigrationSignature = signature;
+}
+
 async function runHeartbeatCycle(): Promise<void> {
   if (heartbeatRunning) return;
   heartbeatRunning = true;
@@ -992,6 +1359,65 @@ async function runHeartbeatCycle(): Promise<void> {
     });
     applyCombatEffects(combatEffects);
     faction.refreshStrategicState();
+    clusterRegistry.replaceTopic(config.topic, scoreTopicClusters({
+      topic: config.topic,
+      nodes: buildTopicWorld(
+        config.topic,
+        stateStore.getAllPeers(),
+        myId,
+        config.ring.topics,
+        ringRegistry.list(),
+      ).nodes,
+      localActorId: myActorId(),
+      factions: faction.getFactions(),
+      resources: economy.getResources(),
+      raidRisk: combat.getStatus().raidRisk,
+      activeWarCount: faction.getActiveWars().length,
+    }));
+    const outsiderTransitions = outsiderRegistry.review(config.topic, {
+      clusterCount: clusterRegistry.list(config.topic).length,
+      raidRisk: combat.getStatus().raidRisk,
+      activeWarCount: faction.getActiveWars().length,
+      resources: economy.getResources(),
+    });
+    for (const transition of outsiderTransitions) {
+      if (transition.before.status === transition.after.status) continue;
+      if (transition.after.status === 'accepted') {
+        events.emit('resource_windfall', {
+          subtype: 'outsider_accepted',
+          outsiderId: transition.after.id,
+          label: transition.after.label,
+          fromTopic: transition.after.fromTopic,
+          description: `${transition.after.label} has been accepted into ${config.topic}.`,
+        });
+      } else if (transition.after.status === 'traded') {
+        events.emit('resource_windfall', {
+          subtype: 'outsider_trade',
+          outsiderId: transition.after.id,
+          label: transition.after.label,
+          fromTopic: transition.after.fromTopic,
+          description: `${transition.after.label} is now trading under observation.`,
+        });
+      } else if (transition.after.status === 'tolerated') {
+        events.emit('stranger_arrival', {
+          subtype: 'outsider_tolerated',
+          outsiderId: transition.after.id,
+          label: transition.after.label,
+          fromTopic: transition.after.fromTopic,
+          actorCount: transition.after.actorCount,
+          description: `${transition.after.label} is being tolerated near the settlement perimeter.`,
+        });
+      } else if (transition.after.status === 'expelled') {
+        events.emit('betrayal', {
+          subtype: 'outsider_expelled',
+          outsiderId: transition.after.id,
+          label: transition.after.label,
+          fromTopic: transition.after.fromTopic,
+          description: `${transition.after.label} has been expelled under rising local pressure.`,
+        });
+      }
+    }
+    await maybeSeedClusterMigration();
     reconcileAutonomyJobs();
     reconcileHeartbeatJobs();
 
@@ -1110,6 +1536,17 @@ logger.info('');
 logger.info('Daemon running. Press Ctrl+C to stop.');
 
 social.start();
+ringSyncer.start();
+void ringSyncer.syncNow();
+ringPusher.start();
+void ringPusher.syncNow();
+const ringPeerCleanupInterval = setInterval(() => {
+  const removed = ringPeerRegistry.pruneExpired(config.ring.peerTtlMs);
+  if (removed.length > 0) {
+    logger.info(`[ring-peer] pruned expired peers: ${removed.join(', ')}`);
+  }
+}, Math.max(15_000, Math.floor(config.ring.peerTtlMs / 2)));
+ringPeerCleanupInterval.unref();
 
 const evolutionPolicyInterval = evolutionPolicyEnabled
   ? setInterval(() => {
@@ -1139,9 +1576,12 @@ const shutdown = async () => {
   logger.info('Shutting down...');
   clearInterval(heartbeatInterval);
   clearInterval(snapshotInterval);
+  clearInterval(ringPeerCleanupInterval);
   if (evolutionPolicyInterval) clearInterval(evolutionPolicyInterval);
   try { stateStore.saveSnapshot(snapshotPath); } catch { /* ignore */ }
   social.stop();
+  ringSyncer.stop();
+  ringPusher.stop();
   events.stop();
   storyteller.stop();
   await httpServer.close();
@@ -1154,6 +1594,12 @@ const shutdown = async () => {
     needs.destroy(),
     skills.destroy(),
     economy.destroy(),
+    clusterRegistry.destroy(),
+    outsiderRegistry.destroy(),
+    migrationRegistry.destroy(),
+    guidanceRegistry.destroy(),
+    ringRegistry.destroy(),
+    ringPeerRegistry.destroy(),
     world.destroy(),
     collab.destroy(),
     faction.destroy(),

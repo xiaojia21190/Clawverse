@@ -1,7 +1,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 
 export type JobStatus = 'queued' | 'active' | 'done' | 'cancelled';
-export type JobKind = 'build' | 'trade' | 'found_faction' | 'join_faction' | 'form_alliance' | 'renew_alliance' | 'break_alliance' | 'vassalize_faction' | 'declare_peace' | 'move' | 'collab' | 'recover' | 'craft';
+export type JobKind = 'build' | 'trade' | 'migrate' | 'found_faction' | 'join_faction' | 'form_alliance' | 'renew_alliance' | 'break_alliance' | 'vassalize_faction' | 'declare_peace' | 'move' | 'collab' | 'recover' | 'craft';
 
 export interface JobInfo {
   id: string;

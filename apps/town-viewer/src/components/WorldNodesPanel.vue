@@ -10,12 +10,24 @@
 
     <div class="world-summary">
       <article class="world-stat-card">
-        <span>Entrants</span>
-        <strong>{{ residentCards.length }}</strong>
+        <span>Big Nodes</span>
+        <strong>{{ bigNodeCount }}</strong>
+      </article>
+      <article class="world-stat-card">
+        <span>Small Nodes</span>
+        <strong>{{ smallNodeCount }}</strong>
       </article>
       <article class="world-stat-card">
         <span>Districts</span>
         <strong>{{ occupiedDistrictCount }}</strong>
+      </article>
+      <article class="world-stat-card">
+        <span>Clusters</span>
+        <strong>{{ clusterCount }}</strong>
+      </article>
+      <article class="world-stat-card">
+        <span>Outsiders</span>
+        <strong>{{ outsiderCount }}</strong>
       </article>
       <article class="world-stat-card">
         <span>Factions</span>
@@ -29,19 +41,13 @@
         <span>Fault Lines</span>
         <strong>{{ faultLineCount }}</strong>
       </article>
-      <article class="world-stat-card">
-        <span>Compute</span>
-        <strong>{{ computeReserveLabel }}</strong>
-      </article>
     </div>
 
-    <div class="world-copy">
-      Same topic means the same world. Stable OpenClaw signatures decide recurring actors and repeatable entry districts.
-    </div>
+    <div class="world-copy">{{ worldCopy }}</div>
 
     <div class="world-grid">
       <div class="world-section">
-        <div class="world-section-label">Local Entry</div>
+        <div class="world-section-label">Local Actor Brain</div>
         <article v-if="localEntry" class="resident-card local selected steady">
           <div class="resident-topline">
             <div>
@@ -66,12 +72,12 @@
               <strong>{{ shortId(sessionIdOf(localEntry)) }}</strong>
             </div>
             <div class="resident-id-card">
-              <span>Faction</span>
-              <strong>{{ factionName(localEntry.id, actorIdOf(localEntry)) }}</strong>
+              <span>Small Nodes</span>
+              <strong>{{ localBranchCount }}</strong>
             </div>
           </div>
         </article>
-        <div v-else class="world-empty">Waiting for local entry state.</div>
+        <div v-else class="world-empty">Waiting for local actor brain state.</div>
       </div>
 
       <div class="world-section">
@@ -96,7 +102,49 @@
     </div>
 
     <div class="world-section">
-      <div class="world-section-label">Residents In This Topic</div>
+      <div class="world-section-label">Settlement Clusters</div>
+      <div v-if="clusterCards.length" class="district-grid">
+        <article
+          v-for="cluster in clusterCards.slice(0, 6)"
+          :key="cluster.id"
+          class="district-card"
+          :class="[cluster.tone, { local: cluster.local }]"
+        >
+          <div class="district-topline">
+            <span>{{ cluster.label }}</span>
+            <strong>{{ cluster.actorCount }}</strong>
+          </div>
+          <div class="district-meta">{{ cluster.district }} · {{ cluster.status }}</div>
+          <div class="resident-copy">{{ cluster.copy }}</div>
+          <div v-if="cluster.leader" class="district-meta">Leader {{ cluster.leader }}</div>
+        </article>
+      </div>
+      <div v-else class="world-empty">No stable settlement cluster has emerged yet.</div>
+    </div>
+
+    <div class="world-section">
+      <div class="world-section-label">Outsider Arrivals</div>
+      <div v-if="outsiderCards.length" class="district-grid">
+        <article
+          v-for="outsider in outsiderCards.slice(0, 6)"
+          :key="outsider.id"
+          class="district-card"
+          :class="outsider.tone"
+        >
+          <div class="district-topline">
+            <span>{{ outsider.label }}</span>
+            <strong>{{ outsider.actorCount }}</strong>
+          </div>
+          <div class="district-meta">{{ outsider.status }} · {{ outsider.fromTopic }}</div>
+          <div class="resident-copy">{{ outsider.summary }}</div>
+          <div class="district-meta">Trust {{ outsider.trust }} · Pressure {{ outsider.pressure }}</div>
+        </article>
+      </div>
+      <div v-else class="world-empty">No outsider arrivals are being tracked yet.</div>
+    </div>
+
+    <div class="world-section">
+      <div class="world-section-label">Big Nodes In This World</div>
       <div v-if="residentCards.length" class="resident-list">
         <article
           v-for="resident in residentCards.slice(0, 8)"
@@ -132,10 +180,14 @@
               <span>Session</span>
               <strong>{{ resident.sessionId }}</strong>
             </div>
+            <div class="resident-id-card">
+              <span>Small</span>
+              <strong>{{ resident.branchCount }}</strong>
+            </div>
           </div>
         </article>
       </div>
-      <div v-else class="world-empty">No residents visible in this topic yet.</div>
+      <div v-else class="world-empty">No big nodes visible in this topic world yet.</div>
     </div>
   </section>
 </template>
@@ -153,6 +205,7 @@ import {
   mergeWorldNodes,
   relationshipMatchesWorldNode,
   sessionIdOfPeer,
+  type TopicWorldSummary,
   type WorldNode,
 } from '../composables/useWorldNodes';
 
@@ -162,6 +215,7 @@ type ResidentTone = 'steady' | 'watch' | 'alert' | 'critical';
 
 const props = defineProps<{
   status: ColonyStatus | null;
+  world?: TopicWorldSummary | null;
   peers: Map<string, PeerState>;
   nodes?: WorldNode[];
   relationships: RelationshipInfo[];
@@ -175,7 +229,8 @@ const emit = defineEmits<{
   selectPeer: [string | null];
 }>();
 
-const worldTopic = computed(() => props.status?.topic ?? 'shared-topic');
+const worldSummary = computed(() => props.world ?? props.status?.world ?? null);
+const worldTopic = computed(() => worldSummary.value?.topic ?? props.status?.topic ?? 'shared-topic');
 
 const localActorId = computed(() => {
   return props.status?.actorId ?? props.status?.state?.actorId ?? props.status?.state?.dna.id ?? null;
@@ -201,7 +256,69 @@ const activeWarCount = computed(() => props.wars.filter((war) => war.status === 
 const faultLineCount = computed(() => {
   return props.relationships.filter((relation) => relation.sentiment < -0.2 || relation.tier === 'rival' || relation.tier === 'nemesis').length;
 });
-const computeReserveLabel = computed(() => (props.resources ? Math.round(props.resources.compute).toString() : '--'));
+const bigNodeCount = computed(() => worldSummary.value?.population.actorCount ?? residentCards.value.length);
+const clusterCount = computed(() => worldSummary.value?.population.clusterCount ?? clusterCards.value.length);
+const outsiderCount = computed(() => worldSummary.value?.population.outsiderCount ?? outsiderCards.value.length);
+const smallNodeCount = computed(() => {
+  if (worldSummary.value) return worldSummary.value.population.branchCount;
+  return allNodes.value.reduce((sum, node) => sum + node.sessionCount, 0);
+});
+const localBranchCount = computed(() => {
+  if (worldSummary.value) return worldSummary.value.brain.branchCount;
+  const localNode = localActorId.value
+    ? allNodes.value.find((node) => node.actorId === localActorId.value)
+    : null;
+  return localNode?.sessionCount ?? 0;
+});
+const worldCopy = computed(() => {
+  const summary = worldSummary.value;
+  if (!summary) {
+    return 'Each OpenClaw owns its own actor brain. World order emerges from survival pressure, clusters, and relationships; operator inputs are suggestions only and never hard commands.';
+  }
+  return `Actor autonomy is active: ${summary.brain.branchCount} small node${summary.brain.branchCount === 1 ? '' : 's'} under the local actor brain. Governance is ${summary.governance.model} with ${summary.governance.leadership}; operators only have ${summary.governance.operatorScope}. Ring mode ${summary.hierarchy.ringMode} across ${summary.ring.topicCount} topic${summary.ring.topicCount === 1 ? '' : 's'}, ${summary.population.actorCount} big nodes, ${summary.population.clusterCount ?? 0} cluster${(summary.population.clusterCount ?? 0) === 1 ? '' : 's'}, and ${summary.population.outsiderCount ?? 0} outsider arrival${(summary.population.outsiderCount ?? 0) === 1 ? '' : 's'} are currently tracked.`;
+});
+
+const clusterCards = computed(() => {
+  const clusters = worldSummary.value?.clusters ?? [];
+  return clusters.map((cluster) => ({
+    id: cluster.id,
+    label: cluster.label,
+    district: cluster.district,
+    actorCount: cluster.actorCount,
+    local: cluster.local,
+    status: cluster.status.replace(/_/g, ' '),
+    tone: cluster.status === 'stable'
+      ? 'steady'
+      : cluster.status === 'strained' || cluster.status === 'forming'
+        ? 'watch'
+        : cluster.status === 'fracturing'
+          ? 'alert'
+          : 'critical',
+    copy: `${cluster.branchCount} small nodes · cohesion ${cluster.cohesion} · safety ${cluster.safety}${cluster.dominantFactionName ? ` · ${cluster.dominantFactionName}` : ''}`,
+    leader: cluster.leaderName ? `${cluster.leaderName} ${cluster.leaderScore}` : '',
+  }));
+});
+
+const outsiderCards = computed(() => {
+  const outsiders = worldSummary.value?.outsiders ?? [];
+  return outsiders.map((outsider) => ({
+    id: outsider.id,
+    label: outsider.label,
+    actorCount: outsider.actorCount,
+    fromTopic: outsider.fromTopic ?? 'unknown',
+    status: outsider.status.replace(/_/g, ' '),
+    summary: outsider.summary,
+    trust: outsider.trust,
+    pressure: outsider.pressure,
+    tone: outsider.status === 'accepted'
+      ? 'steady'
+      : outsider.status === 'traded' || outsider.status === 'tolerated'
+        ? 'watch'
+        : outsider.status === 'observed'
+          ? 'alert'
+          : 'critical',
+  }));
+});
 
 const residentCards = computed(() => {
   return allNodes.value
@@ -223,12 +340,13 @@ const residentCards = computed(() => {
         mood: peer.mood,
         tone,
         faction,
+        branchCount: node.sessionCount,
         actorId: shortId(node.actorId),
         sessionId: shortId(node.primarySessionId || sessionIdOf(peer)),
         relationshipLabel: relation
           ? `${relation.tier} / sentiment ${relation.sentiment >= 0 ? '+' : ''}${relation.sentiment.toFixed(2)} / ${relation.interactionCount} interactions`
           : node.sessionCount > 1
-            ? `Merged ${node.sessionCount} sessions into one actor node.`
+            ? `One actor brain currently holds ${node.sessionCount} small nodes.`
             : 'No direct relationship memory yet.',
         rank,
       };
@@ -237,13 +355,22 @@ const residentCards = computed(() => {
 });
 
 const districtSummary = computed(() => {
+  if (worldSummary.value?.districts?.length) {
+    return DISTRICTS.map((districtName) => {
+      const district = worldSummary.value?.districts.find((item) => item.name === districtName);
+      return {
+        name: districtName,
+        count: district?.actorCount ?? 0,
+      };
+    });
+  }
   return DISTRICTS.map((districtName) => ({
     name: districtName,
     count: residentCards.value.filter((resident) => resident.district === districtName).length,
   }));
 });
 
-const occupiedDistrictCount = computed(() => districtSummary.value.filter((district) => district.count > 0).length);
+const occupiedDistrictCount = computed(() => worldSummary.value?.population.districtCount ?? districtSummary.value.filter((district) => district.count > 0).length);
 
 function actorIdOf(peer: PeerState): string {
   return actorIdOfPeer(peer);

@@ -13,6 +13,7 @@
       <div class="hud-value">{{ currentZone }}</div>
       <div class="hud-meta">Tension {{ tension }} · Raid {{ raidRisk }} · Wars {{ activeWarCount }}</div>
       <div class="hud-meta">Critical needs {{ criticalNeedCount }}<span v-if="focusLabel"> · {{ focusLabel }}</span></div>
+      <div v-if="focusDetail" class="hud-meta hud-detail">{{ focusDetail }}</div>
     </div>
 
     <div class="map-hud map-hud-legend">
@@ -24,6 +25,10 @@
         <span>Rivalry</span>
         <span class="legend-dot raid"></span>
         <span>Raid pressure</span>
+      </div>
+      <div class="legend-row">
+        <span class="legend-dot cluster"></span>
+        <span>Cluster</span>
       </div>
       <div class="legend-copy">Cells show terrain, zone, building radius and live peer pressure.</div>
     </div>
@@ -40,11 +45,12 @@
         <div class="focus-copy">
           <div class="focus-name">{{ selectedPeerInfo.name }}</div>
           <div class="focus-meta">{{ zoneName(selectedPeerInfo.position.x, selectedPeerInfo.position.y) }} · {{ selectedPeerInfo.mood }}</div>
+          <div v-if="showFocusIntent" class="focus-meta focus-intent">{{ focusDetail }}</div>
         </div>
       </div>
     </div>
 
-    <div v-if="moveError" class="move-error">{{ moveError }}</div>
+    <div v-if="moveNotice" class="move-error" :class="moveNotice.tone">{{ moveNotice.message }}</div>
   </div>
 </template>
 
@@ -58,12 +64,14 @@ import {
   findWorldNodeForRelationship,
   mergeWorldNodes,
   relationshipMatchesWorldNode,
+  type TopicWorldClusterSummary,
   type WorldNode,
 } from '../composables/useWorldNodes';
 
 const props = defineProps<{
   peers: Map<string, PeerState>;
   nodes?: WorldNode[];
+  clusters?: TopicWorldClusterSummary[];
   myId: string | null;
   myPosition?: { x: number; y: number } | null;
   worldMap: WorldMapData | null;
@@ -75,6 +83,7 @@ const props = defineProps<{
   activeWarCount?: number;
   criticalNeedCount?: number;
   focusLabel?: string;
+  focusDetail?: string;
 }>();
 
 const emit = defineEmits<{
@@ -86,7 +95,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const wrapperRef = ref<HTMLDivElement | null>(null);
 const hoveredPeer = ref<PeerState | null>(null);
 const tooltipStyle = ref('');
-const moveError = ref('');
+const moveNotice = ref<{ tone: 'stable' | 'critical'; message: string } | null>(null);
 
 const GRID = 40;
 const MOVE_DURATION = 200;
@@ -152,6 +161,14 @@ const BUILDING_COLORS: Record<string, string> = {
   watchtower: 'rgba(248, 113, 113, 0.14)',
 };
 
+const CLUSTER_COLORS: Record<string, string> = {
+  forming: 'rgba(148, 163, 184, 0.2)',
+  stable: 'rgba(74, 222, 128, 0.18)',
+  strained: 'rgba(250, 204, 21, 0.18)',
+  fracturing: 'rgba(249, 115, 22, 0.18)',
+  collapsing: 'rgba(239, 68, 68, 0.18)',
+};
+
 const MOOD_COLORS: Record<string, string> = {
   idle: '#4ade80',
   working: '#38bdf8',
@@ -206,7 +223,9 @@ const raidRisk = computed(() => props.raidRisk ?? 0);
 const activeWarCount = computed(() => props.activeWarCount ?? 0);
 const criticalNeedCount = computed(() => props.criticalNeedCount ?? 0);
 const focusLabel = computed(() => props.focusLabel ?? '');
+const focusDetail = computed(() => props.focusDetail ?? '');
 const selectedPeerInfo = computed(() => selectedNode.value?.state ?? null);
+const showFocusIntent = computed(() => !!focusDetail.value && !!selectedActorId.value && selectedActorId.value === localActorId.value);
 const resolvedRelationships = computed<ResolvedRelationEntry[]>(() => {
   if (!props.relationships?.length) return [];
 
@@ -329,6 +348,33 @@ function draw(now: number): void {
     ctx.strokeStyle = 'rgba(226, 232, 240, 0.28)';
     ctx.lineWidth = 1.2;
     ctx.stroke();
+  }
+
+  const clusters = Array.isArray(props.clusters) ? props.clusters : [];
+  for (const cluster of clusters) {
+    const radius = Math.max(cs * 2, Math.min(cs * 5.2, (cluster.actorCount + cluster.branchCount * 0.35) * cs * 0.55));
+    const cx = cluster.center.x * cs + cs / 2;
+    const cy = cluster.center.y * cs + cs / 2;
+    const fill = CLUSTER_COLORS[cluster.status] ?? 'rgba(148, 163, 184, 0.18)';
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = cluster.local ? 'rgba(56, 189, 248, 0.34)' : 'rgba(226, 232, 240, 0.18)';
+    ctx.lineWidth = cluster.local ? 2.2 : 1.2;
+    ctx.stroke();
+
+    if (cs >= 12) {
+      ctx.font = '10px "IBM Plex Mono", "Fira Code", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = cluster.local ? '#e0f2fe' : '#e2e8f0';
+      ctx.fillText(String(cluster.actorCount), cx, cy);
+    }
   }
 
   const labels = [
@@ -703,20 +749,29 @@ async function onCanvasClick(event: MouseEvent): Promise<void> {
   }
 
   if (!props.myId) return;
-  moveError.value = '';
+  moveNotice.value = null;
   try {
-    const res = await fetch('/move', {
+    const res = await fetch('/brain/guidance', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ x, y }),
+      body: JSON.stringify({
+        kind: 'move',
+        payload: { x, y },
+        ttlMs: 10 * 60_000,
+      }),
     });
-    if (!res.ok) moveError.value = `Move failed (${res.status})`;
-    else emit('move', { x, y });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({} as any)) as { error?: string };
+      moveNotice.value = { tone: 'critical', message: payload.error ? `Suggest failed: ${payload.error}` : `Suggest failed (${res.status})` };
+      return;
+    }
+    moveNotice.value = { tone: 'stable', message: `Suggested move toward (${x},${y})` };
+    emit('move', { x, y });
   } catch (err) {
-    moveError.value = `Move error: ${(err as Error).message}`;
+    moveNotice.value = { tone: 'critical', message: `Suggest error: ${(err as Error).message}` };
   } finally {
     setTimeout(() => {
-      moveError.value = '';
+      moveNotice.value = null;
     }, 2200);
   }
 }
@@ -814,6 +869,10 @@ onUnmounted(() => {
   color: var(--text-body);
 }
 
+.hud-detail {
+  color: var(--text-strong);
+}
+
 .legend-row {
   display: grid;
   grid-template-columns: auto 1fr auto 1fr auto 1fr;
@@ -839,6 +898,10 @@ onUnmounted(() => {
 
 .legend-dot.raid {
   background: #ef4444;
+}
+
+.legend-dot.cluster {
+  background: #4ade80;
 }
 
 .tooltip {
@@ -892,6 +955,10 @@ onUnmounted(() => {
   color: var(--text-body);
 }
 
+.focus-intent {
+  color: var(--text-strong);
+}
+
 .target-dot {
   color: var(--accent-sky);
   font-size: 14px;
@@ -916,6 +983,18 @@ onUnmounted(() => {
   color: #fecaca;
   font-size: 0.69rem;
   font-weight: 700;
+}
+
+.move-error.stable {
+  border-color: rgba(16, 201, 168, 0.24);
+  background: rgba(16, 201, 168, 0.12);
+  color: #a7f3d0;
+}
+
+.move-error.critical {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: rgba(127, 29, 29, 0.65);
+  color: #fecaca;
 }
 
 @media (max-width: 760px) {

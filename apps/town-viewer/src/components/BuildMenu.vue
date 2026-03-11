@@ -1,6 +1,6 @@
 <template>
   <div class="build-menu">
-    <div class="title">Build Node</div>
+    <div class="title">Suggest Build</div>
 
     <button
       v-for="b in BUILDINGS"

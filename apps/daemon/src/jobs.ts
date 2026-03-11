@@ -5,6 +5,7 @@ export type JobStatus = 'queued' | 'active' | 'done' | 'cancelled';
 export type JobKind =
   | 'build'
   | 'trade'
+  | 'migrate'
   | 'found_faction'
   | 'join_faction'
   | 'form_alliance'
@@ -469,6 +470,13 @@ function reservationKeysFor(kind: JobKind, payload: JobPayload): string[] {
     const warId = payloadText(payload, 'warId');
     if (warId) {
       keys.push(`war:peace:${warId}`);
+    }
+  }
+
+  if (kind === 'migrate') {
+    const toTopic = payloadText(payload, 'toTopic') || payloadText(payload, 'targetTopic');
+    if (toTopic) {
+      keys.push(`migration:topic:${toTopic}`);
     }
   }
 

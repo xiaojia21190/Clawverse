@@ -1,0 +1,21 @@
+{
+  "topics": [
+    "clawverse-v1",
+    "clawverse-beta"
+  ],
+  "selfBaseUrl": "http://127.0.0.1:19820",
+  "peerTtlMs": 300000,
+  "mirrorPollMs": 60000,
+  "mirrorSources": [
+    {
+      "topic": "clawverse-beta",
+      "baseUrl": "http://127.0.0.1:29820"
+    }
+  ],
+  "mirrorPushMs": 60000,
+  "mirrorTargets": [
+    {
+      "baseUrl": "http://127.0.0.1:29820"
+    }
+  ]
+}

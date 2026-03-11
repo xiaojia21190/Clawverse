@@ -120,6 +120,13 @@ All options are read from environment variables. Create a `.env` file in `apps/d
 | `HEARTBEAT_INTERVAL_MS` | `5000` | P2P broadcast interval |
 | `CLAWVERSE_SQLITE_PATH` | `data/state/clawverse.db` | SQLite database path for daemon state |
 | `CLAWVERSE_STATE_SNAPSHOT_PATH` | `data/state/latest.json` | Snapshot key used in SQLite `state_snapshots` table |
+| `CLAWVERSE_RING_CONFIG_PATH` | `data/ring/ring.json` | File-based ring federation config |
+| `CLAWVERSE_RING_SELF_URL` | — | Public base URL this daemon should announce to ring peers |
+| `CLAWVERSE_RING_TOPICS` | — | Override tracked ring topics (comma-separated) |
+| `CLAWVERSE_RING_PEER_TTL_MS` | `300000` | TTL before discovered ring peers are pruned |
+| `CLAWVERSE_RING_MIRROR_SOURCES` | — | Override pull mirrors like `topic=http://host:port` |
+| `CLAWVERSE_RING_MIRROR_TARGETS` | — | Override push targets like `http://host:port` |
+| `CLAWVERSE_AUTONOMY_ORCHESTRATION_MODE` | `advisory` | Advisory-only mode; governor output remains soft strategic hints and does not apply hard priority bias |
 | `REQUIRE_SIGNED_MESSAGES` | `false` | Enforce HMAC on all messages |
 | `SHARED_SECRET` | — | HMAC signing key (required if signing enabled) |
 
@@ -131,6 +138,24 @@ All options are read from environment variables. Create a `.env` file in `apps/d
   "maxMessagesPerWindow": 50,  // rate limit per peer per 10 s window
   "requireSignedMessages": false,
   "sharedSecret": ""
+}
+```
+
+**Ring federation** (`data/ring/ring.json`):
+
+```jsonc
+{
+  "topics": ["clawverse-v1", "clawverse-beta"],
+  "selfBaseUrl": "http://127.0.0.1:19820",
+  "peerTtlMs": 300000,
+  "mirrorPollMs": 60000,
+  "mirrorSources": [
+    { "topic": "clawverse-beta", "baseUrl": "http://127.0.0.1:29820" }
+  ],
+  "mirrorPushMs": 60000,
+  "mirrorTargets": [
+    { "baseUrl": "http://127.0.0.1:29820" }
+  ]
 }
 ```
 
@@ -146,8 +171,17 @@ All endpoints are on `http://localhost:19820`.
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `GET` | `/status` | Current mood, metrics, peer count, DNA |
-| `POST` | `/move` | Update map position `{ x, y }` |
+| `POST` | `/move` | Update map position `{ x, y }` (typically driven by `walk-worker`) |
 | `GET` | `/network` | Network statistics |
+
+### Guidance
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/brain/guidance` | Active operator guidance (soft preferences) |
+| `POST` | `/brain/guidance` | Add guidance `{ kind, message, payload?, ttlMs?, actorId?, sessionId? }`; operator can only target local actor/session |
+| `POST` | `/brain/guidance/:id/consume` | Mark guidance consumed |
+| `DELETE` | `/brain/guidance/:id` | Dismiss guidance |
 
 ### Peers
 
@@ -239,6 +273,8 @@ data/
 │   └── summaries/LATEST.md       # latest cycle summary
 ├── security/
 │   └── network.json              # peer allowlist + signing config
+├── ring/
+│   └── ring.json                 # ring federation pull/push config
 └── social/
     └── memories/<peerId>.json    # worker-local conversation memory cache
 ```

@@ -13,7 +13,8 @@
                 <div class="name">{{ peer.name }}</div>
                 <div class="mood-badge" :class="moodTone">{{ peer.mood }}</div>
               </div>
-              <div class="traits">{{ peer.dna?.archetype }} · {{ peer.dna?.modelTrait }} · {{ isSelf ? 'Operator Node' : 'Observed Peer' }}</div>
+              <div class="traits">{{ peer.dna?.archetype }} · {{ peer.dna?.modelTrait }} · {{ identityRoleLabel }}</div>
+              <div v-if="leadershipLabel" class="traits">{{ leadershipLabel }}</div>
               <div class="persona">{{ peer.dna?.persona || 'No SOUL persona signature exposed.' }}</div>
             </div>
           </div>
@@ -30,6 +31,18 @@
             <div class="meta-item">
               <span>Position</span>
               <strong>({{ peer.position.x }}, {{ peer.position.y }})</strong>
+            </div>
+            <div class="meta-item">
+              <span>Actor</span>
+              <strong>{{ actorSignature }}</strong>
+            </div>
+            <div class="meta-item">
+              <span>Session</span>
+              <strong>{{ sessionSignature }}</strong>
+            </div>
+            <div class="meta-item">
+              <span>Small Nodes</span>
+              <strong>{{ branchCount }}</strong>
             </div>
             <div class="meta-item">
               <span>CPU</span>
@@ -96,7 +109,7 @@
       </section>
 
       <section class="data-card">
-        <div class="section-title">Operator Telemetry</div>
+        <div class="section-title">Local Brain Telemetry</div>
         <div v-if="resolvedMetrics" class="meta-grid telemetry">
           <div class="meta-item">
             <span>Cores</span>
@@ -126,6 +139,7 @@ import { computed } from 'vue';
 import type { PeerState } from '../composables/usePeers';
 import type { NeedsState, SkillsState } from '../composables/useColonyState';
 import type { HardwareMetrics } from '../composables/useStatus';
+import type { TopicWorldSummary, WorldNode } from '../composables/useWorldNodes';
 
 interface RelationshipView {
   tier: string;
@@ -142,6 +156,8 @@ interface FocusView {
 
 const props = withDefaults(defineProps<{
   peer: PeerState | null;
+  node?: WorldNode | null;
+  world?: TopicWorldSummary | null;
   relationship: RelationshipView | null;
   needs?: NeedsState | null;
   myNeeds?: NeedsState | null;
@@ -153,6 +169,8 @@ const props = withDefaults(defineProps<{
   myPeerId?: string | null;
   myId?: string | null;
 }>(), {
+  node: null,
+  world: null,
   relationship: null,
   needs: null,
   myNeeds: null,
@@ -182,6 +200,21 @@ const resolvedMetrics = computed(() => props.metrics ?? null);
 const resolvedMyPeerId = computed(() => props.myPeerId ?? props.myId ?? null);
 
 const isSelf = computed(() => !!props.peer && props.peer.id === resolvedMyPeerId.value);
+const identityRoleLabel = computed(() => isSelf.value ? 'Local Brain' : 'Observed Big Node');
+const leadershipLabel = computed(() => {
+  const actorId = props.node?.actorId ?? props.peer?.actorId ?? props.peer?.dna?.id ?? null;
+  if (!actorId || !props.world?.clusters?.length) return '';
+  const cluster = props.world.clusters.find((item) => item.actorIds.includes(actorId));
+  if (!cluster) return '';
+  if (cluster.leaderActorId === actorId) return `Cluster Leader · ${cluster.label}`;
+  return `Cluster Member · ${cluster.label}`;
+});
+const branchCount = computed(() => {
+  if (isSelf.value && props.world?.brain.branchCount != null) return props.world.brain.branchCount;
+  return props.node?.sessionCount ?? 1;
+});
+const actorSignature = computed(() => shortId(props.node?.actorId ?? props.peer?.actorId ?? props.peer?.dna?.id ?? null));
+const sessionSignature = computed(() => shortId(props.node?.primarySessionId ?? props.peer?.sessionId ?? props.peer?.id ?? null));
 
 const moodTone = computed(() => {
   if (!props.peer) return 'idle';
@@ -254,6 +287,10 @@ function toneForNeed(value: number): 'steady' | 'watch' | 'critical' {
   if (value < 15) return 'critical';
   if (value < 35) return 'watch';
   return 'steady';
+}
+
+function shortId(value: string | null | undefined): string {
+  return value ? value.slice(0, 8) : 'unknown';
 }
 </script>
 

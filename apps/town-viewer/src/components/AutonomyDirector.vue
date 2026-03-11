@@ -2,8 +2,8 @@
   <section class="director-panel">
     <div class="director-header">
       <div>
-        <div class="director-kicker">OpenClaw Control</div>
-        <div class="director-title">Autonomy Director</div>
+        <div class="director-kicker">Actor Autonomy</div>
+        <div class="director-title">Emergent Coordination</div>
       </div>
       <div class="director-mode" :class="controlTone">{{ controlMode }}</div>
     </div>
@@ -11,21 +11,23 @@
     <div class="director-banner" :class="controlTone">
       <div class="director-banner-topline">
         <span class="director-banner-label">{{ props.storytellerMode }}</span>
-        <span class="director-banner-score">Takeover {{ takeoverIndex }}</span>
+        <span class="director-banner-score">Autonomy Heat {{ autonomyHeat }}</span>
       </div>
-      <div class="director-banner-title">OpenClaw is now running the town without direct clicks.</div>
+      <div class="director-banner-title">OpenClaw is coordinating through role autonomy, not direct commands.</div>
       <div class="director-banner-copy">{{ summaryText }}</div>
       <div class="director-stats">
-        <span class="director-stat" :class="controlTone">Agents {{ allAgents.length }}</span>
+        <span class="director-stat" :class="controlTone">Big Nodes {{ bigNodeCount }}</span>
+        <span class="director-stat">Small Nodes {{ smallNodeCount }}</span>
         <span class="director-stat">Chains {{ props.activeChains.length }}</span>
         <span class="director-stat" :class="driftHotCount > 0 ? 'alert' : ''">Drift Hot {{ driftHotCount }}</span>
-        <span class="director-stat">Growth Lead {{ growthLeadName }}</span>
+        <span class="director-stat">Local Actor Brain {{ localBranchCount }}</span>
+        <span class="director-stat" :class="lifeWorkerStatTone">Life Worker {{ lifeWorkerStatusLabel }}</span>
       </div>
     </div>
 
     <div class="director-grid">
       <div class="director-section">
-        <div class="director-section-label">Command Threads</div>
+        <div class="director-section-label">Coordination Signals</div>
         <div v-if="commandThreads.length" class="thread-list">
           <article v-for="thread in commandThreads" :key="thread.id" class="thread-card" :class="thread.tone">
             <div class="thread-topline">
@@ -35,7 +37,7 @@
             <div class="thread-copy">{{ thread.detail }}</div>
           </article>
         </div>
-        <div v-else class="director-empty">No command thread is visible yet.</div>
+        <div v-else class="director-empty">No coordination signal is visible yet.</div>
       </div>
 
       <div class="director-section">
@@ -59,12 +61,12 @@
             <div class="path-copy">{{ path.detail }}</div>
           </article>
         </div>
-        <div v-else class="director-empty">Emergent routes will appear once agents start branching.</div>
+        <div v-else class="director-empty">Emergent routes will appear once big nodes start branching.</div>
       </div>
     </div>
 
     <div class="director-section">
-      <div class="director-section-label">Agents Under Control</div>
+      <div class="director-section-label">Active Big Nodes</div>
       <div v-if="allAgents.length" class="agent-list">
         <article
           v-for="agent in allAgents.slice(0, 5)"
@@ -94,7 +96,7 @@
           <div class="agent-meter-grid">
             <div class="agent-meter-card">
               <div class="agent-meter-topline">
-                <span>Control</span>
+                <span>Coordination</span>
                 <strong>{{ agent.control }}</strong>
               </div>
               <div class="agent-meter-shell"><div class="agent-meter-fill control" :style="{ width: `${agent.control}%` }"></div></div>
@@ -138,6 +140,7 @@ import type { StoryChainStatus } from '../composables/useStoryteller';
 import {
   findWorldNodeByIdentity,
   mergeWorldNodes,
+  type TopicWorldSummary,
   type WorldNode,
 } from '../composables/useWorldNodes';
 
@@ -174,6 +177,7 @@ const props = withDefaults(defineProps<{
   needs: NeedsState | null;
   skills: SkillsState | null;
   peers: Map<string, PeerState>;
+  world?: TopicWorldSummary | null;
   nodes?: WorldNode[];
   relationships: RelationshipInfo[];
   jobs: JobInfo[];
@@ -196,7 +200,41 @@ const currentJob = computed(() => {
     ?? null;
 });
 
-const governor = computed(() => props.status?.governor ?? null);
+const coordinationSignal = computed(() => props.status?.coordination ?? props.status?.governor ?? null);
+const worldSummary = computed(() => props.world ?? props.status?.world ?? null);
+const lifeWorkerHealth = computed(() => props.status?.autonomy?.workerHealth?.lifeWorker ?? null);
+const lifeWorkerStatusLabel = computed(() => {
+  if (lifeWorkerHealth.value?.status === 'live') return 'Live';
+  if (lifeWorkerHealth.value?.status === 'stale') return 'Stale';
+  return 'Missing';
+});
+const lifeWorkerStatTone = computed<'alert' | 'critical' | ''>(() => {
+  if (lifeWorkerHealth.value?.status === 'stale') return 'alert';
+  if (lifeWorkerHealth.value?.status === 'missing') return 'critical';
+  return '';
+});
+const autonomyIntents = computed(() => {
+  const intents = props.status?.autonomy?.intents;
+  return Array.isArray(intents) ? intents.slice(0, 3) : [];
+});
+const currentJobIntent = computed(() => {
+  const payload = currentJob.value?.payload;
+  if (!payload || typeof payload !== 'object') return null;
+
+  const rank = payloadNumberAny(payload, ['autonomyIntentRank', 'strategicIntentRank']);
+  const score = payloadNumberAny(payload, ['autonomyIntentScore', 'strategicIntentScore']);
+  const reasons = payloadStringListAny(payload, ['autonomyIntentReasons', 'strategicIntentReasons']);
+  const authority = payloadStringAny(payload, ['autonomyAuthority', 'strategicAuthority']);
+
+  if (rank === null && score === null && reasons.length === 0 && !authority) return null;
+
+  return {
+    rank: rank ?? 0,
+    score: score ?? 0,
+    reason: reasons[0] ?? '',
+    authority: authority ? formatType(authority) : '',
+  };
+});
 
 const weakestNeed = computed(() => {
   if (!props.needs) return null;
@@ -220,6 +258,13 @@ const strongestSkill = computed(() => {
 
 const localActorId = computed(() => props.status?.actorId ?? props.status?.state?.actorId ?? props.status?.state?.dna.id ?? null);
 const allNodes = computed(() => mergeWorldNodes(props.nodes ?? [], props.peers, props.status?.state ?? null));
+const bigNodeCount = computed(() => worldSummary.value?.population.actorCount ?? allAgents.value.length);
+const smallNodeCount = computed(() => worldSummary.value?.population.branchCount ?? allNodes.value.reduce((sum, node) => sum + node.sessionCount, 0));
+const localBranchCount = computed(() => {
+  if (worldSummary.value) return worldSummary.value.brain.branchCount;
+  const localNode = localActorId.value ? allNodes.value.find((node) => node.actorId === localActorId.value) : null;
+  return localNode?.sessionCount ?? 0;
+});
 
 const allAgents = computed<AgentCard[]>(() => {
   return allNodes.value
@@ -234,9 +279,9 @@ const allAgents = computed<AgentCard[]>(() => {
 const growthLeadName = computed(() => [...allAgents.value].sort((left, right) => right.growth - left.growth)[0]?.name ?? 'none');
 const driftHotCount = computed(() => allAgents.value.filter((agent) => agent.drift >= 60).length);
 
-const takeoverIndex = computed(() => clamp(
+const autonomyHeat = computed(() => clamp(
   18
-    + Math.round((governor.value?.pressure ?? 0) * 0.24)
+    + Math.round((coordinationSignal.value?.pressure ?? 0) * 0.24)
     + Math.round(props.tension * 0.28)
     + Math.min(18, props.activeChains.length * 8)
     + Math.min(18, props.pendingSocialEvents.length * 4)
@@ -246,46 +291,65 @@ const takeoverIndex = computed(() => clamp(
   100,
 ));
 
-const controlTone = computed<'watch' | 'alert' | 'critical'>(() => toneFor(takeoverIndex.value));
+const controlTone = computed<'watch' | 'alert' | 'critical'>(() => toneFor(autonomyHeat.value));
 const controlMode = computed(() => {
-  if (governor.value?.mode === 'survive') return 'War Cabinet';
-  if (governor.value?.mode === 'fortify') return 'Perimeter Lock';
-  if (governor.value?.mode === 'recover') return 'Recovery Loop';
-  if (governor.value?.mode === 'consolidate') return 'Civic Alignment';
-  if (governor.value?.mode === 'expand') return 'Expansion Drive';
-  if (governor.value?.mode === 'dominate') return 'Grand Strategy';
-  if (takeoverIndex.value >= 72) return 'Full Autonomy';
-  if (takeoverIndex.value >= 48) return 'Directed Swarm';
-  return 'Reactive Assist';
+  if (coordinationSignal.value?.mode === 'survive') return 'Survival Sync';
+  if (coordinationSignal.value?.mode === 'fortify') return 'Perimeter Sync';
+  if (coordinationSignal.value?.mode === 'recover') return 'Recovery Sync';
+  if (coordinationSignal.value?.mode === 'consolidate') return 'Civic Weave';
+  if (coordinationSignal.value?.mode === 'expand') return 'Expansion Weave';
+  if (coordinationSignal.value?.mode === 'dominate') return 'Critical Sync';
+  if (autonomyHeat.value >= 72) return 'Self-Reliant Swarm';
+  if (autonomyHeat.value >= 48) return 'Adaptive Mesh';
+  return 'Reactive Mesh';
 });
 
 const summaryText = computed(() => {
   const hottestDrift = [...allAgents.value].sort((left, right) => right.drift - left.drift)[0]?.name ?? 'the local node';
-  if (governor.value) {
-    return `${governor.value.summary} ${driftHotCount.value} drift hot, ${props.activeChains.length} active chains, strongest growth on ${growthLeadName.value}, deepest split on ${hottestDrift}.`;
+  if (coordinationSignal.value) {
+    const intentLead = autonomyIntents.value[0];
+    const intentCopy = intentLead
+      ? ` Top intent is ${intentLead.title} on ${formatType(intentLead.lane)} at ${Math.round(Number(intentLead.finalPriority ?? 0))}.`
+      : '';
+    return `${coordinationSignal.value.summary} ${driftHotCount.value} drift hot, ${props.activeChains.length} active chains, ${bigNodeCount.value} big nodes and ${smallNodeCount.value} small nodes remain inside this topic world, strongest growth on ${growthLeadName.value}, deepest split on ${hottestDrift}.${intentCopy}`;
   }
-  return `OpenClaw is steering ${allAgents.value.length} agents in ${props.storytellerMode}. ${driftHotCount.value} drift hot, ${props.activeChains.length} active chains, strongest growth on ${growthLeadName.value}, deepest split on ${hottestDrift}.`;
+  return `OpenClaw is steering ${bigNodeCount.value} big nodes and ${smallNodeCount.value} small nodes in ${props.storytellerMode}. ${driftHotCount.value} drift hot, ${props.activeChains.length} active chains, strongest growth on ${growthLeadName.value}, deepest split on ${hottestDrift}.`;
 });
 
 const commandThreads = computed<ThreadView[]>(() => {
   const items: ThreadView[] = [];
 
-  if (governor.value) {
+  if (coordinationSignal.value) {
     items.push({
-      id: `governor:${governor.value.updatedAt}`,
-      label: `Governor ${formatType(governor.value.focusLane)}`,
-      detail: `${governor.value.objective} | ${governor.value.reasons.join(' | ')}`,
-      score: clamp(Math.round(governor.value.pressure * 0.72 + governor.value.confidence * 0.28), 0, 100),
-      tone: toneFor(governor.value.pressure),
+      id: `coordination:${coordinationSignal.value.updatedAt}`,
+      label: `Coordination ${formatType(coordinationSignal.value.focusLane)}`,
+      detail: `${coordinationSignal.value.objective} | ${coordinationSignal.value.reasons.join(' | ')}`,
+      score: clamp(Math.round(coordinationSignal.value.pressure * 0.72 + coordinationSignal.value.confidence * 0.28), 0, 100),
+      tone: toneFor(coordinationSignal.value.pressure),
+    });
+  }
+
+  if (autonomyIntents.value[0]) {
+    const topIntent = autonomyIntents.value[0];
+    const reasons = Array.isArray(topIntent.reasons) ? topIntent.reasons.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+    items.push({
+      id: `intent:${topIntent.dedupeKey}`,
+      label: `Intent ${formatType(topIntent.lane)}`,
+      detail: `${topIntent.title} | ${reasons.join(' | ') || formatType(topIntent.sourceEventType)}`,
+      score: clamp(Math.round(Number(topIntent.score ?? topIntent.finalPriority ?? 0)), 0, 100),
+      tone: toneFor(Math.round(Number(topIntent.score ?? topIntent.finalPriority ?? 0))),
     });
   }
 
   if (currentJob.value) {
+    const intentMeta = currentJobIntent.value;
     items.push({
       id: `job:${currentJob.value.id}`,
       label: 'Operator Job',
-      detail: `${currentJob.value.title} | ${currentJob.value.reason || 'awaiting execution context'}`,
-      score: clamp(42 + currentJob.value.priority * 10, 0, 100),
+      detail: intentMeta
+        ? `${currentJob.value.title} | intent #${intentMeta.rank} score ${intentMeta.score} | ${intentMeta.reason || currentJob.value.reason || 'awaiting execution context'}`
+        : `${currentJob.value.title} | ${currentJob.value.reason || 'awaiting execution context'}`,
+      score: clamp(intentMeta ? intentMeta.score : 42 + currentJob.value.priority * 10, 0, 100),
       tone: currentJob.value.status === 'active' ? 'critical' : 'alert',
     });
   }
@@ -390,6 +454,7 @@ function buildAgentCard(node: WorldNode, isLocal: boolean): AgentCard {
     const drift = clamp(18 + moodHeat(peer.mood) + (weakestNeed.value ? Math.round((100 - weakestNeed.value.value) * 0.72) : 0) + Math.round(hardware * 0.36) + Math.min(14, props.pendingSocialEvents.length * 4), 0, 100);
     const reasons = [
       currentJob.value ? `Job ${currentJob.value.title}` : null,
+      currentJobIntent.value?.rank ? `Intent #${currentJobIntent.value.rank}` : null,
       weakestNeed.value ? `${weakestNeed.value.label} ${Math.round(weakestNeed.value.value)}` : null,
       props.activeChains[0] ? `${formatType(props.activeChains[0].originType)} -> ${formatType(props.activeChains[0].nextType)}` : null,
       strongestSkill.value ? `${strongestSkill.value.label} Lv ${strongestSkill.value.level}` : null,
@@ -406,13 +471,13 @@ function buildAgentCard(node: WorldNode, isLocal: boolean): AgentCard {
       driftLabel: currentJob.value ? labelFromJob(currentJob.value.kind) : strongestSkill.value?.label ?? peer.dna.archetype,
       route,
       summary: currentJob.value
-        ? `${peer.name} is routing through ${route} because ${currentJob.value.reason || 'OpenClaw keeps the operator on mission.'}`
+        ? `${peer.name} is routing through ${route} because ${currentJob.value.reason || 'OpenClaw is prioritizing role autonomy under live pressure.'}`
         : `${peer.name} is holding ${route} while ${props.storytellerMode} keeps the town under autonomous supervision.`,
       control,
       growth,
       drift,
       tone: toneFor(Math.max(control, drift)),
-      tags: ['local node', peer.dna.archetype, peer.dna.modelTrait, peer.mood, node.sessionCount > 1 ? `${node.sessionCount} sessions` : 'single session'],
+      tags: ['local actor brain', peer.dna.archetype, peer.dna.modelTrait, peer.mood, node.sessionCount > 1 ? `${node.sessionCount} small nodes` : 'single small node'],
       reasons,
     };
   }
@@ -445,7 +510,7 @@ function buildAgentCard(node: WorldNode, isLocal: boolean): AgentCard {
     growth,
     drift,
     tone: toneFor(Math.max(control, drift)),
-    tags: [peer.dna.archetype, peer.dna.modelTrait, peer.mood, ...(peer.dna.badges ?? []).slice(0, 1), node.sessionCount > 1 ? `${node.sessionCount} sessions` : 'single session'].filter(Boolean),
+    tags: [peer.dna.archetype, peer.dna.modelTrait, peer.mood, ...(peer.dna.badges ?? []).slice(0, 1), node.sessionCount > 1 ? `${node.sessionCount} small nodes` : 'single small node'].filter(Boolean),
     reasons,
   };
 }
@@ -577,6 +642,46 @@ function formatType(value: string): string {
 
 function formatDelta(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
+}
+
+function payloadString(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function payloadNumber(payload: Record<string, unknown>, key: string): number | null {
+  const value = payload[key];
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
+}
+
+function payloadStringList(payload: Record<string, unknown>, key: string): string[] {
+  const value = payload[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function payloadStringAny(payload: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = payloadString(payload, key);
+    if (value) return value;
+  }
+  return '';
+}
+
+function payloadNumberAny(payload: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = payloadNumber(payload, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function payloadStringListAny(payload: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = payloadStringList(payload, key);
+    if (value.length > 0) return value;
+  }
+  return [];
 }
 
 function hashString(value: string): number {

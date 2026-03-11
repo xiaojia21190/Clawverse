@@ -6,7 +6,8 @@
       v-for="m in modes"
       :key="m"
       :class="['mode-btn', { active: currentMode === m }]"
-      @click="$emit('setMode', m)"
+      :disabled="!interactive"
+      @click="interactive && $emit('setMode', m)"
     >
       {{ m }}
     </button>
@@ -16,7 +17,9 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{ currentMode: string; tension: number }>();
+withDefaults(defineProps<{ currentMode: string; tension: number; interactive?: boolean }>(), {
+  interactive: false,
+});
 defineEmits<{ setMode: [string] }>();
 
 const modes = ['Randy', 'Cassandra', 'Phoebe'];
@@ -54,6 +57,19 @@ const modes = ['Randy', 'Cassandra', 'Phoebe'];
   transform: translateY(-1px);
   color: var(--accent-sky);
   box-shadow: var(--shadow-float);
+}
+
+.mode-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+  box-shadow: var(--shadow-pressed);
+}
+
+.mode-btn:disabled:hover {
+  transform: none;
+  color: var(--text-body);
+  box-shadow: var(--shadow-pressed);
 }
 
 .mode-btn.active {

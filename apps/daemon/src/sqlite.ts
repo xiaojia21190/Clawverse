@@ -100,6 +100,52 @@ function initSchema(db: DatabaseSync): void {
       payload_json TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS ring_topic_mirrors (
+      topic TEXT PRIMARY KEY,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ring_peers (
+      topic TEXT PRIMARY KEY,
+      base_url TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS migration_intents (
+      id TEXT PRIMARY KEY,
+      actor_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      from_topic TEXT NOT NULL,
+      to_topic TEXT NOT NULL,
+      status TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS world_clusters (
+      id TEXT PRIMARY KEY,
+      topic TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS world_outsiders (
+      id TEXT PRIMARY KEY,
+      host_topic TEXT NOT NULL,
+      status TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS brain_guidance (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS collab_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ts TEXT NOT NULL,

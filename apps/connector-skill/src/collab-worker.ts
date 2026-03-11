@@ -14,6 +14,8 @@ import { FileWriteQueue } from './io-queue.js';
 import { resolveProjectPath } from './paths.js';
 
 const DAEMON_URL = process.env.CLAWVERSE_DAEMON_URL || 'http://127.0.0.1:19820';
+const DAEMON_ORIGIN = 'collab-worker';
+const DAEMON_HEADERS = { 'x-clawverse-origin': DAEMON_ORIGIN } as const;
 const POLL_INTERVAL_MS = Number(process.env.CLAWVERSE_COLLAB_POLL_MS || 60_000);
 const COLLAB_LOG = resolveProjectPath('data/collab/worker.log');
 
@@ -53,6 +55,7 @@ async function poll(): Promise<void> {
   let tasks: CollabTask[];
   try {
     const res = await fetch(`${DAEMON_URL}/collab/pending`, {
+      headers: DAEMON_HEADERS,
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return;
@@ -90,7 +93,7 @@ async function poll(): Promise<void> {
     try {
       const res = await fetch(`${DAEMON_URL}/collab/resolve`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...DAEMON_HEADERS },
         body: JSON.stringify({ id: task.id, result, success }),
         signal: AbortSignal.timeout(5_000),
       });
